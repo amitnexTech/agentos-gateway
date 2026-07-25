@@ -5,71 +5,87 @@ Unified AI API gateway with a browser dashboard. One `localhost` URL for Claude 
 ## Architecture
 
 ```
-Claude Code ─→ localhost:9000/v1/messages (Anthropic)
-Codex       ─→ localhost:9000/v1/responses (OpenAI Responses)
-Any tool    ─→ localhost:9000/v1/chat/completions (OpenAI Chat)
-Dashboard   ─→ localhost:9000/admin (browser)
+Claude Code ─→ localhost:9000/v1/messages    (Anthropic format)  ─→ routing["claude"] provider
+Codex       ─→ localhost:9000/v1/responses   (OpenAI Responses)  ─→ routing["codex"] provider
+Kiro/Any    ─→ localhost:9000/v1/chat/completions (OpenAI Chat)  ─→ routing["openai"] provider
+Dashboard   ─→ localhost:9000/admin
+Logs        ─→ localhost:9000/admin/logs
 ```
+
+Each tool can use a different provider — or all the same. Switch in dashboard dropdown, no restart.
 
 ## Directory Structure
 
 ```
 src/
-├── server.js          # Entry point
-├── app.js             # Express app setup
+├── server.js              # Entry point
+├── app.js                 # Express app setup
+├── registry.js            # Adapter registry + factory
 ├── routes/
-│   ├── admin.js       # Dashboard API + HTML
-│   ├── proxy.js       # /v1/chat/completions (OpenAI)
-│   ├── anthropic.js   # /v1/messages (Claude Code)
-│   └── responses.js   # /v1/responses (Codex)
+│   ├── admin.js           # Dashboard API + routing + provider CRUD
+│   ├── adminPage.js       # Dashboard HTML (inline, no build step)
+│   ├── logPage.js         # Request log page HTML
+│   ├── proxy.js           # /v1/chat/completions (OpenAI)
+│   ├── anthropic.js       # /v1/messages (Claude Code) + model alias
+│   └── responses.js       # /v1/responses (Codex)
 ├── config/
-│   ├── keysStore.js   # Provider + model registry (keys.json)
-│   ├── envStore.js    # Secrets store (.env)
-│   └── usageStore.js  # Request/token tracking
+│   ├── keysStore.js       # Provider + model + routing registry (keys.json)
+│   ├── envStore.js        # Secrets store (data/.env)
+│   ├── usageStore.js      # Request/token tracking
+│   └── logStore.js        # In-memory request log (last 200)
 ├── adapters/
-│   ├── base.js        # Abstract adapter
-│   ├── openaiCompat.js # Generic OpenAI-compat providers
-│   └── ...            # Per-provider adapters
-├── kiro/
-│   └── auth.js        # Kiro OAuth/SSO token management
+│   ├── base.js            # Abstract adapter
+│   ├── openaiCompat.js    # OpenAI-compatible providers
+│   ├── anthropicCompat.js # Anthropic-compatible providers
+│   └── localOpenAI.js     # Local providers (no auth)
 ├── lib/
-│   ├── errors.js      # Error handling
-│   ├── stream.js      # SSE stream piping
-│   └── modelFetch.js  # Auto-fetch models from provider
-dashboard/             # React admin UI (future)
-data/                  # Runtime data (gitignored)
-├── keys.json          # Provider registry
-├── .env               # API keys (secrets)
-└── usage.json         # Usage stats
+│   ├── errors.js          # Error handling
+│   ├── stream.js          # SSE stream piping
+│   ├── modelFetch.js      # Auto-fetch models (with /v1 auto-detection)
+│   ├── upstreamError.js   # Upstream error extraction
+│   └── providerProbe.js   # Provider health check
+data/                      # Runtime data (gitignored)
+├── keys.json              # Provider + routing config
+├── .env                   # API keys (secrets)
+└── usage.json             # Usage stats
 ```
 
-## Key Design Decisions
+## Provider Types (3 only)
 
-1. **Manual routing only** — no auto-switch between providers. User controls which provider serves which tool.
-2. **Per-tool config** — Claude Code and Codex can use different providers/models independently.
-3. **Dashboard-driven** — all config changes via browser UI, no file editing needed.
-4. **Plug and play** — add provider URL + key → auto-fetch models → enable → done.
-5. **Kiro native** — built-in Kiro account management (SQLite auth, token refresh, multi-account).
+| Type | Use For | Auth |
+|------|---------|------|
+| `openai-compat` | OpenRouter, Requesty, Groq, Together, any OpenAI-format API | API key |
+| `anthropic-compat` | Anthropic direct, Lumosel, any Anthropic-format API | API key |
+| `local-openai` | Ollama, LM Studio, llama.cpp | None |
+
+## Key Features
+
+1. **Per-tool routing** — Claude Code, Codex, OpenAI tools each independently routed to any provider
+2. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
+3. **Token tracking** — input/output/cache_read/cache_write per request
+4. **Cost estimation** — approximate $ cost per request based on Anthropic pricing
+5. **Model alias mapping** — Claude Code dated names auto-resolved (claude-sonnet-4-20250514 → claude-sonnet-4.5)
+6. **Auto /v1 detection** — base URL auto-corrected if user doesn't add /v1
+7. **Enable/Disable** — per-provider toggle, disabled providers don't route
+8. **Manual model add** — when /models endpoint fails, add models manually
+9. **Request logs** — live log page with latency, tokens, cost, model verification
 
 ## Running
 
 ```bash
 npm install
 npm start         # port 9000
-# or
 npm run dev       # with --watch
 ```
 
-## Provider Types
+## Dashboard Presets
 
-- `openai-compat` — any OpenAI-compatible API (OpenRouter, Requesty, etc.)
-- `kiro` — Kiro/AWS accounts with OAuth token management
-- `local-openai` — Ollama, LM Studio, llama.cpp
-- `gemini` — Google Gemini (translated)
+Quick-add: OpenRouter, Requesty, Groq, Together, Ollama, Anthropic
 
-## For Open Source Release
+## Design Principles
 
-- MIT licensed
-- No vendor lock-in
-- Works with any provider that speaks OpenAI or Anthropic protocol
-- Dashboard is self-contained (no external dependencies)
+- No OAuth — API key auth only
+- No build step — inline HTML dashboard
+- No external dependencies beyond express
+- No cache layer — passthrough proxy
+- MIT licensed, open-source ready
