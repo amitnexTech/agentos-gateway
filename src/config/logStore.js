@@ -1,10 +1,55 @@
-// In-memory request log (last N requests). Not persisted — resets on restart.
+// Request log (last N requests), persisted to data/logs.json so it survives restarts.
 // For debugging/visibility, not analytics.
 
-const MAX_ENTRIES = 200;
-const logs = [];
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { join } from "node:path";
+import { updateProvider, getProvider } from "./keysStore.js";
+import { dataDir } from "./envStore.js";
 
-export function logRequest({ tool, model, providerId, providerName, latencyMs, status, error, responseModel, usage }) {
+const MAX_ENTRIES = 200;
+
+function logsPath() {
+  return join(dataDir(), "logs.json");
+}
+
+function load() {
+  try {
+    const parsed = JSON.parse(readFileSync(logsPath(), "utf8"));
+    return Array.isArray(parsed) ? parsed.slice(0, MAX_ENTRIES) : [];
+  } catch {
+    return [];
+  }
+}
+
+const logs = existsSync(logsPath()) ? load() : [];
+
+// ponytail: rewrite the whole file per request — 200 entries is ~80KB, fine at
+// personal-gateway volume. Switch to append-only JSONL if it ever gets hot.
+function persist() {
+  try {
+    mkdirSync(dataDir(), { recursive: true });
+    const tmp = `${logsPath()}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify(logs)}\n`, { mode: 0o600 });
+    renameSync(tmp, logsPath());
+  } catch {
+    // Non-fatal: logging must never break a proxied request.
+  }
+}
+
+// Accumulate credits on provider's usedCredits field (persistent)
+function creditAccumulator(providerId, credits) {
+  try {
+    const p = getProvider(providerId);
+    if (p && p.type === "kiro") {
+      const current = p.usedCredits || 0;
+      updateProvider(providerId, { usedCredits: Math.round((current + credits) * 1000000) / 1000000 });
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
+export function logRequest({ tool, model, providerId, providerName, latencyMs, status, error, responseModel, usage, kiroCredits }) {
   // Approximate cost calculation (per million tokens)
   // Claude Sonnet: $3/M input, $15/M output, cache read 90% off
   // Claude Opus: $15/M input, $75/M output
@@ -24,6 +69,11 @@ export function logRequest({ tool, model, providerId, providerName, latencyMs, s
     cost = Math.round(cost * 10000) / 10000; // 4 decimal places
   }
 
+  // Accumulate Kiro credits on provider (persistent tracking)
+  if (kiroCredits && providerId && creditAccumulator) {
+    creditAccumulator(providerId, kiroCredits);
+  }
+
   const entry = {
     ts: new Date().toISOString(),
     tool,
@@ -37,9 +87,11 @@ export function logRequest({ tool, model, providerId, providerName, latencyMs, s
     modelMismatch: responseModel && responseModel !== model ? true : false,
     usage: usage || null,
     cost,
+    kiroCredits: kiroCredits != null ? Math.round(kiroCredits * 1000000) / 1000000 : null,
   };
   logs.unshift(entry);
   if (logs.length > MAX_ENTRIES) logs.length = MAX_ENTRIES;
+  persist();
   return entry;
 }
 
@@ -51,4 +103,5 @@ export function getLogs({ limit = 50, tool } = {}) {
 
 export function clearLogs() {
   logs.length = 0;
+  persist();
 }

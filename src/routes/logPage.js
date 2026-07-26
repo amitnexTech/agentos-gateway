@@ -51,6 +51,7 @@ export function renderLogPage() {
       <div class="actions">
         <span class="pill" id="countPill">0 entries</span>
         <span class="pill" id="costPill">$0.00</span>
+        <span class="pill" id="creditsPill" title="Kiro credits only">0 cr</span>
         <span class="pill" id="tokenPill">0 tokens</span>
         <select id="filterTool">
           <option value="">All tools</option>
@@ -67,7 +68,7 @@ export function renderLogPage() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th>Tokens (in/out/cache)</th><th>Cost</th><th>Latency</th><th>Status</th><th>Error</th></tr>
+          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th>Tokens (in/out/cache)</th><th>Cost</th><th>Kiro Cr</th><th>Latency</th><th>Status</th><th>Error</th></tr>
         </thead>
         <tbody id="logBody"></tbody>
       </table>
@@ -104,10 +105,12 @@ export function renderLogPage() {
         el("countPill").textContent = logs.length + " entries";
         const totalCost = logs.reduce((s,l) => s + (l.cost||0), 0);
         const totalTokens = logs.reduce((s,l) => s + (l.usage?.input_tokens||0) + (l.usage?.output_tokens||0), 0);
+        const totalCredits = logs.reduce((s,l) => s + (l.kiroCredits||0), 0);
         el("costPill").textContent = "$" + totalCost.toFixed(3);
+        el("creditsPill").textContent = totalCredits.toFixed(4) + " cr (Kiro)";
         el("tokenPill").textContent = totalTokens.toLocaleString() + " tokens";
         if (!logs.length) {
-          el("logBody").innerHTML = '<tr><td colspan="7"><div class="empty">No requests logged yet. Use Claude Code, Codex, or any tool to generate traffic.</div></td></tr>';
+          el("logBody").innerHTML = '<tr><td colspan="10"><div class="empty">No requests logged yet. Use Claude Code, Codex, or any tool to generate traffic.</div></td></tr>';
           return;
         }
         el("logBody").innerHTML = logs.map(l => {
@@ -120,6 +123,7 @@ export function renderLogPage() {
             ? '<span class="mono">'+l.usage.input_tokens+'↓ '+l.usage.output_tokens+'↑'+(l.usage.cache_read?' C:'+l.usage.cache_read+'r':'')+(l.usage.cache_write?' '+l.usage.cache_write+'w':'')+'</span>'
             : '<span style="color:var(--muted)">—</span>';
           const costCell = l.cost !== null ? '<span class="mono">$'+l.cost.toFixed(4)+'</span>' : '—';
+          const creditsCell = l.kiroCredits ? '<span class="mono">'+l.kiroCredits.toFixed(4)+' cr</span>' : '';
           return '<tr>' +
             '<td class="mono">'+formatTime(l.ts)+'</td>' +
             '<td><span class="badge '+escapeHtml(l.tool)+'">'+escapeHtml(l.tool)+'</span></td>' +
@@ -127,13 +131,14 @@ export function renderLogPage() {
             '<td>'+escapeHtml(l.providerName)+'</td>' +
             '<td>'+tokenCell+'</td>' +
             '<td>'+costCell+'</td>' +
+            '<td>'+creditsCell+'</td>' +
             '<td><span class="latency '+latencyClass(l.latencyMs)+'">'+formatLatency(l.latencyMs)+'</span></td>' +
             '<td><span class="badge '+escapeHtml(l.status)+'">'+escapeHtml(l.status)+'</span></td>' +
             '<td class="error-cell" title="'+escapeHtml(l.error||"")+'">'+escapeHtml(l.error||"—")+'</td>' +
           '</tr>';
         }).join("");
       } catch(e) {
-        el("logBody").innerHTML = '<tr><td colspan="7"><div class="empty">Failed to load logs: '+escapeHtml(e.message)+'</div></td></tr>';
+        el("logBody").innerHTML = '<tr><td colspan="10"><div class="empty">Failed to load logs: '+escapeHtml(e.message)+'</div></td></tr>';
       }
     }
 

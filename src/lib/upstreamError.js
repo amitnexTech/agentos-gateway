@@ -45,8 +45,22 @@ export function extractUpstreamError(value) {
   return code ? `${message} (${code})` : message;
 }
 
+function htmlErrorSummary(text) {
+  if (!/^\s*<(?:!doctype|html)/i.test(text)) return "";
+  const title = text
+    .match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+    ?.trim()
+    .replace(/\s+/g, " ");
+  const suffix = "upstream returned an HTML error page, not JSON — provider-side failure";
+  return title ? `${suffix} (${title})` : suffix;
+}
+
 export async function upstreamErrorMessage(response, { limit = 500 } = {}) {
   const text = await safeText(response);
-  const message = extractUpstreamError(text) || response.statusText || String(response.status || "upstream error");
+  const message =
+    htmlErrorSummary(text) ||
+    extractUpstreamError(text) ||
+    response.statusText ||
+    String(response.status || "upstream error");
   return message.slice(0, limit);
 }
