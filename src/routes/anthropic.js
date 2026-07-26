@@ -5,6 +5,8 @@ import { recordRequest, recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
 import { ApiError } from "../lib/errors.js";
 import { upstreamErrorMessage } from "../lib/upstreamError.js";
+import { anthropicToKiro } from "../kiro/converter.js";
+import { streamKiroToAnthropic, collectKiroResponse } from "../kiro/stream.js";
 
 export const anthropicRouter = Router();
 
@@ -52,6 +54,93 @@ anthropicRouter.post("/messages", async (req, res, next) => {
       throw err;
     }
 
+    // --- Kiro direct provider: convert Anthropic → Kiro API format ---
+    if (provider.type === "kiro") {
+      const startTime = Date.now();
+      try {
+        // Model validation: reject unavailable models BEFORE sending to Kiro API (ban risk)
+        const allowedModels = getToolModels("claude");
+        if (allowedModels.length && !allowedModels.includes(model)) {
+          throw new ApiError(400, `Model "${model}" is not configured for Kiro. Available: ${allowedModels.join(", ")}`);
+        }
+
+        // Get headers + endpoint from the adapter
+        const kiroHeaders = adapter.getRequestHeaders();
+        const kiroUrl = adapter.getRequestUrl(model, { stream });
+
+        // Convert Anthropic request to Kiro payload
+        const kiroPayload = anthropicToKiro({ ...req.body, model });
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 300000);
+
+        let upstream;
+        try {
+          upstream = await fetch(kiroUrl, {
+            method: "POST",
+            headers: kiroHeaders,
+            body: JSON.stringify(kiroPayload),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        if (!upstream.ok) {
+          recordError(model);
+          const detail = await upstream.text().catch(() => "");
+          logRequest({ tool: "claude", model, providerId: provider.id, providerName: provider.name, latencyMs: Date.now() - startTime, status: "error", error: `${upstream.status}: ${detail.slice(0, 200)}` });
+          if (upstream.status === 403) {
+            throw new ApiError(502, `Kiro rejected the API key (403). Check the key is still valid in the Kiro portal: ${detail.slice(0, 200)}`);
+          }
+          throw new ApiError(upstream.status >= 500 ? 502 : upstream.status, `Kiro API error (${upstream.status}): ${detail.slice(0, 200)}`);
+        }
+
+        recordRequest(model);
+
+        if (stream) {
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+          res.setHeader("Connection", "keep-alive");
+          res.setHeader("X-Accel-Buffering", "no");
+
+          const kiroUsage = await streamKiroToAnthropic(upstream.body, res, model);
+
+          logRequest({
+            tool: "claude", model, providerId: provider.id, providerName: provider.name,
+            latencyMs: Date.now() - startTime, status: "ok",
+            responseModel: model,
+            kiroCredits: kiroUsage.credits,
+            usage: { input_tokens: 0, output_tokens: kiroUsage.outputTokens },
+          });
+
+          res.end();
+          return;
+        }
+
+        // Non-streaming
+        const responseJson = await collectKiroResponse(upstream.body, model);
+        logRequest({
+          tool: "claude", model, providerId: provider.id, providerName: provider.name,
+          latencyMs: Date.now() - startTime, status: "ok",
+          responseModel: model,
+          kiroCredits: responseJson._kiro?.credits,
+          usage: responseJson.usage || null,
+        });
+        // Remove internal _kiro field before sending to client
+        delete responseJson._kiro;
+        res.json(responseJson);
+        return;
+      } catch (err) {
+        if (model && !(err instanceof ApiError)) recordError(model);
+        if (err.name === "AbortError") return next(new ApiError(504, "Kiro API timeout"));
+        if (res.headersSent) { res.end(); return; }
+        next(err);
+        return;
+      }
+    }
+
+    // --- Standard Anthropic-compat provider: forward directly ---
     // Forward the request directly to provider's /v1/messages endpoint
     // (Kiro gateway and other Anthropic-compatible providers support this)
     const messagesUrl = `${adapter.baseUrl}/messages`;

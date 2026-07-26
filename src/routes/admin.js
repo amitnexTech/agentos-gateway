@@ -26,6 +26,7 @@ import { ApiError } from "../lib/errors.js";
 import { renderAdminPage } from "./adminPage.js";
 import { getLogs, clearLogs } from "../config/logStore.js";
 import { renderLogPage } from "./logPage.js";
+import { kiroAccountRouter } from "./kiroAccount.js";
 
 export const adminRouter = Router();
 
@@ -275,3 +276,7 @@ adminRouter.delete("/logs", (_req, res) => {
   clearLogs();
   res.json({ ok: true });
 });
+
+
+// --- Kiro Account Management ---
+adminRouter.use(kiroAccountRouter);

@@ -12,6 +12,15 @@
   "dependencies": {
     "express": "^4.19.2"
   },
-  "keywords": ["ai", "proxy", "gateway", "claude-code", "codex", "kiro", "openai", "anthropic"],
+  "keywords": [
+    "ai",
+    "proxy",
+    "gateway",
+    "claude-code",
+    "codex",
+    "kiro",
+    "openai",
+    "anthropic"
+  ],
   "license": "MIT"
 }

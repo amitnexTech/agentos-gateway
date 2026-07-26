@@ -3,6 +3,7 @@ import { upstreamErrorMessage } from "./upstreamError.js";
 // Fetch the list of available models from an upstream provider.
 // Auto-appends /v1 if baseUrl doesn't already end with it.
 export async function fetchModels({ adapter, apiKey }) {
+  // If adapter has custom fetchModels (e.g. Kiro), use that
   if (typeof adapter.fetchModels === "function") {
     return adapter.fetchModels();
   }
@@ -10,6 +11,12 @@ export async function fetchModels({ adapter, apiKey }) {
   const headers = { ...adapter.getRequestHeaders() };
   if (apiKey !== undefined && headers.Authorization === undefined && !adapter.supportsNoAuth) {
     headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  // If adapter doesn't have a models URL, return empty
+  const modelsUrlBase = adapter.getModelsUrl ? adapter.getModelsUrl() : null;
+  if (!modelsUrlBase && !adapter.baseUrl) {
+    return { models: [], correctedBaseUrl: null };
   }
 
   // Normalize: ensure /v1/models path regardless of whether user gave /v1 or not

@@ -193,6 +193,36 @@ export function renderAdminPage() {
         </section>
       </div>
     </div>
+
+    <!-- Kiro Account Management -->
+    <section style="margin-top:16px">
+      <div class="panel-head">
+        <h2>Kiro Accounts</h2>
+        <button id="kiroAddBtn" class="primary" type="button">+ Add Kiro Account</button>
+      </div>
+      <div class="panel-body stack">
+        <div id="kiroStatus" style="color:var(--muted);font-size:13px"></div>
+        <form id="kiroAddForm" style="display:none" class="stack">
+          <label>API Key
+            <input type="password" id="kiroKey" placeholder="ksk_..." autocomplete="off" required>
+          </label>
+          <div style="color:var(--muted);font-size:12px;margin-top:-4px">
+            Generate at app.kiro.dev &rarr; Account &rarr; API Keys. Requires Pro/Pro+/Power with API keys enabled by your admin.
+          </div>
+          <label>Account Name <span style="color:var(--muted);font-weight:400">(optional)</span>
+            <input type="text" id="kiroName" placeholder="e.g. Work Pro+">
+          </label>
+          <label>Credit Budget <span style="color:var(--muted);font-weight:400">(optional, for usage tracking)</span>
+            <input type="number" id="kiroBudget" placeholder="e.g. 1000" step="any" min="0">
+          </label>
+          <div style="display:flex;gap:8px">
+            <button type="submit" class="primary">Add Account</button>
+            <button type="button" id="kiroCancelBtn">Cancel</button>
+          </div>
+        </form>
+        <div id="kiroAccountsList"></div>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -442,6 +472,156 @@ export function renderAdminPage() {
     el("testProvider").addEventListener("change",updateTestModelsForProvider);
     document.querySelectorAll("[data-preset]").forEach(b=>b.addEventListener("click",()=>applyPreset(b.dataset.preset)));
     updateTypeMode(); refresh();
+
+    // --- Kiro Account Management ---
+    function kiroShowForm(show) {
+      el("kiroAddForm").style.display = show ? "block" : "none";
+      el("kiroAddBtn").disabled = show;
+      if (!show) { el("kiroKey").value = ""; el("kiroName").value = ""; el("kiroBudget").value = ""; }
+    }
+
+    async function kiroAddAccount(e) {
+      e.preventDefault();
+      const apiKey = el("kiroKey").value.trim();
+      const name = el("kiroName").value.trim();
+      const budget = parseFloat(el("kiroBudget").value);
+      if (!apiKey) { el("kiroStatus").textContent = "API key is required."; return; }
+      el("kiroStatus").textContent = "Validating key with Kiro...";
+      try {
+        const result = await api("/admin/kiro/account", {
+          method: "POST",
+          body: JSON.stringify({
+            apiKey,
+            name: name || undefined,
+            creditBudget: Number.isFinite(budget) && budget > 0 ? budget : undefined,
+          }),
+        });
+        const p = result.provider;
+        el("kiroStatus").textContent = "Added " + p.name + " — account " + (p.accountId || "?") + ", " + p.models.length + " models.";
+        kiroShowForm(false);
+        await refresh();
+        await loadKiroAccounts();
+      } catch(e) {
+        el("kiroStatus").textContent = "Failed: " + e.message;
+      }
+    }
+
+    let kiroAccounts = [];
+
+    async function loadKiroAccounts() {
+      try {
+        const r = await fetch("/admin/kiro/accounts");
+        const accounts = await r.json();
+        kiroAccounts = accounts;
+        if (!accounts.length) {
+          el("kiroAccountsList").innerHTML = '<div style="color:var(--muted);font-size:13px">No Kiro accounts added yet.</div>';
+          return;
+        }
+        el("kiroAccountsList").innerHTML = accounts.map(a => {
+          let usage, bar = '';
+          if (a.creditBudget) {
+            usage = a.usedCredits.toFixed(2) + ' / ' + a.creditBudget + ' cr';
+            const color = a.usedPercent >= 90 ? '#a73737' : a.usedPercent >= 70 ? '#9b4a10' : '#0d6f63';
+            bar = '<div style="width:90px;height:6px;background:var(--line);border-radius:3px;overflow:hidden">' +
+                  '<div style="width:' + a.usedPercent + '%;height:100%;background:' + color + '"></div></div>' +
+                  '<span class="mono" style="font-size:11px;color:var(--muted);min-width:34px">' + a.usedPercent + '%</span>';
+          } else {
+            usage = a.usedCredits.toFixed(4) + ' cr used';
+          }
+          const keyWarn = a.hasKey ? '' : '<span class="badge" style="background:#a73737;color:#fff;font-size:11px">NO KEY</span>';
+          return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">' +
+            '<span style="font-weight:600;flex:1">' + escapeHtml(a.name) + '</span>' +
+            '<span class="mono" style="font-size:12px">' + usage + '</span>' + bar + keyWarn +
+            '<span class="pill" style="font-size:11px">' + escapeHtml(a.region) + '</span>' +
+            '<button type="button" data-kiro-edit="' + a.id + '" style="font-size:12px;padding:2px 8px;min-height:28px">Edit</button>' +
+            '<button type="button" data-kiro-rotate="' + a.id + '" style="font-size:12px;padding:2px 8px;min-height:28px">Replace key</button>' +
+            '<button type="button" data-kiro-reset="' + a.id + '" style="font-size:12px;padding:2px 8px;min-height:28px">Reset credits</button>' +
+            '<button type="button" class="danger" data-kiro-del="' + a.id + '" style="font-size:12px;padding:2px 8px;min-height:28px">Delete</button>' +
+          '</div>';
+        }).join("");
+      } catch {}
+    }
+
+    async function kiroRotateKey(id) {
+      const apiKey = prompt("Paste the new Kiro API key for this account (ksk_...):");
+      if (!apiKey || !apiKey.trim()) return;
+      el("kiroStatus").textContent = "Validating new key...";
+      try {
+        await api("/admin/kiro/account/" + id, { method: "PUT", body: JSON.stringify({ apiKey: apiKey.trim() }) });
+        el("kiroStatus").textContent = "Key replaced.";
+        await loadKiroAccounts();
+      } catch(e) {
+        el("kiroStatus").textContent = "Failed: " + e.message;
+      }
+    }
+
+    async function kiroResetCredits(id) {
+      if (!confirm("Reset the tracked credit usage for this account to zero?")) return;
+      try {
+        await api("/admin/kiro/account/" + id, { method: "PUT", body: JSON.stringify({ resetCredits: true }) });
+        el("kiroStatus").textContent = "Credit usage reset.";
+        await loadKiroAccounts();
+      } catch(e) {
+        el("kiroStatus").textContent = "Failed: " + e.message;
+      }
+    }
+
+    async function kiroEditAccount(id) {
+      const a = kiroAccounts.find(x => x.id === id);
+      if (!a) return;
+      const current = a.name.replace(/^Kiro:\\s*/, "");
+      const name = prompt("Account name:", current);
+      if (name === null) return;
+      const budgetIn = prompt("Credit budget (leave blank for no budget):", a.creditBudget != null ? String(a.creditBudget) : "");
+      if (budgetIn === null) return;
+
+      const body = {};
+      if (name.trim()) body.name = name.trim();
+      const b = budgetIn.trim();
+      if (b === "") body.creditBudget = null;
+      else {
+        const n = parseFloat(b);
+        if (!isFinite(n) || n < 0) { el("kiroStatus").textContent = "Budget must be a positive number."; return; }
+        body.creditBudget = n;
+      }
+      try {
+        await api("/admin/kiro/account/" + id, { method: "PUT", body: JSON.stringify(body) });
+        el("kiroStatus").textContent = "Account updated.";
+        await loadKiroAccounts();
+        await refresh();
+      } catch(e) {
+        el("kiroStatus").textContent = "Failed: " + e.message;
+      }
+    }
+
+    async function kiroDeleteAccount(id) {
+      const a = kiroAccounts.find(x => x.id === id);
+      const label = a ? a.name : id;
+      if (!confirm('Delete "' + label + '"? The stored API key is removed, its models are dropped, and any tool routed to it becomes unassigned. This cannot be undone.')) return;
+      try {
+        await api("/admin/kiro/account/" + id, { method: "DELETE" });
+        el("kiroStatus").textContent = "Deleted " + label + ".";
+        await loadKiroAccounts();
+        await refresh();
+      } catch(e) {
+        el("kiroStatus").textContent = "Failed: " + e.message;
+      }
+    }
+
+    el("kiroAddBtn").addEventListener("click", () => { el("kiroStatus").textContent = ""; kiroShowForm(true); });
+    el("kiroCancelBtn").addEventListener("click", () => { el("kiroStatus").textContent = ""; kiroShowForm(false); });
+    el("kiroAddForm").addEventListener("submit", kiroAddAccount);
+    el("kiroAccountsList").addEventListener("click", (ev) => {
+      const edit = ev.target.closest("[data-kiro-edit]");
+      if (edit) return kiroEditAccount(edit.dataset.kiroEdit);
+      const rotate = ev.target.closest("[data-kiro-rotate]");
+      if (rotate) return kiroRotateKey(rotate.dataset.kiroRotate);
+      const reset = ev.target.closest("[data-kiro-reset]");
+      if (reset) return kiroResetCredits(reset.dataset.kiroReset);
+      const del = ev.target.closest("[data-kiro-del]");
+      if (del) return kiroDeleteAccount(del.dataset.kiroDel);
+    });
+    loadKiroAccounts();
   </script>
 </body>
 </html>`;

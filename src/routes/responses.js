@@ -1,13 +1,48 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { lookupProviderForTool, getEnabledModels } from "../config/keysStore.js";
+import { lookupProviderForTool, getEnabledModels, getToolModels } from "../config/keysStore.js";
 import { createAdapter, MissingSecretError, UnknownProviderTypeError } from "../registry.js";
 import { recordRequest, recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
 import { ApiError } from "../lib/errors.js";
 import { upstreamErrorMessage } from "../lib/upstreamError.js";
+import { anthropicToKiro } from "../kiro/converter.js";
+import { collectKiroResponse } from "../kiro/stream.js";
 
 export const responsesRouter = Router();
+
+// Convert Anthropic Messages response to OpenAI chat/completions format
+// (needed to bridge Kiro response into Responses API format)
+function anthropicToChatResponse(anthropicResp, model) {
+  const content = anthropicResp.content || [];
+  const textParts = content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  const toolUses = content.filter((b) => b.type === "tool_use");
+
+  const message = { role: "assistant", content: textParts || null };
+  if (toolUses.length) {
+    message.tool_calls = toolUses.map((tu) => ({
+      id: tu.id,
+      type: "function",
+      function: { name: tu.name, arguments: JSON.stringify(tu.input || {}) },
+    }));
+  }
+
+  let finishReason = "stop";
+  if (anthropicResp.stop_reason === "tool_use") finishReason = "tool_calls";
+  else if (anthropicResp.stop_reason === "max_tokens") finishReason = "length";
+
+  return {
+    id: anthropicResp.id || `chatcmpl-${randomUUID().slice(0, 8)}`,
+    object: "chat.completion",
+    model,
+    choices: [{ index: 0, message, finish_reason: finishReason }],
+    usage: {
+      prompt_tokens: anthropicResp.usage?.input_tokens || 0,
+      completion_tokens: anthropicResp.usage?.output_tokens || 0,
+      total_tokens: (anthropicResp.usage?.input_tokens || 0) + (anthropicResp.usage?.output_tokens || 0),
+    },
+  };
+}
 
 // Convert Responses API input to chat messages
 function inputToMessages(input, instructions) {
@@ -236,7 +271,105 @@ responsesRouter.post("/responses", async (req, res, next) => {
       throw err;
     }
 
-    // Convert Responses input to chat messages
+    // --- Kiro direct provider: convert to Kiro format, get response, convert to Responses format ---
+    if (provider.type === "kiro") {
+      const startTime = Date.now();
+      try {
+        // Model validation: reject unavailable models BEFORE sending to Kiro API (ban risk)
+        const allowedModels = getToolModels("codex");
+        if (allowedModels.length && !allowedModels.includes(model)) {
+          throw new ApiError(400, `Model "${model}" is not configured for Kiro. Available: ${allowedModels.join(", ")}`);
+        }
+
+        // Convert Responses input to Anthropic-style messages
+        const messages = inputToMessages(req.body.input, req.body.instructions);
+
+        // Convert tools from Responses format to Anthropic format
+        const anthropicTools = (req.body.tools || [])
+          .filter((t) => t.type === "function")
+          .map((t) => ({
+            name: t.name || "",
+            description: t.description || "",
+            input_schema: t.parameters || { type: "object", properties: {} },
+          }));
+
+        // Build Anthropic-style request for converter
+        const anthropicReq = {
+          model,
+          messages,
+          max_tokens: req.body.max_output_tokens || 16000,
+        };
+        if (anthropicTools.length) {
+          anthropicReq.tools = anthropicTools;
+        }
+
+        // Convert to Kiro payload
+        const kiroHeaders = adapter.getRequestHeaders();
+        const kiroUrl = adapter.getRequestUrl(model, { stream: false });
+        const kiroPayload = anthropicToKiro(anthropicReq);
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 300000);
+
+        let upstream;
+        try {
+          upstream = await fetch(kiroUrl, {
+            method: "POST",
+            headers: kiroHeaders,
+            body: JSON.stringify(kiroPayload),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        if (!upstream.ok) {
+          recordError(model);
+          const detail = await upstream.text().catch(() => "");
+          logRequest({ tool: "codex", model, providerId: provider.id, providerName: provider.name, latencyMs: Date.now() - startTime, status: "error", error: `${upstream.status}: ${detail.slice(0, 200)}` });
+          if (upstream.status === 403) {
+            throw new ApiError(502, `Kiro rejected the API key (403). Check the key is still valid in the Kiro portal: ${detail.slice(0, 200)}`);
+          }
+          throw new ApiError(upstream.status >= 500 ? 502 : upstream.status, `Kiro API error (${upstream.status}): ${detail.slice(0, 200)}`);
+        }
+
+        recordRequest(model);
+
+        // Collect Kiro response and convert to Anthropic format first
+        const anthropicResp = await collectKiroResponse(upstream.body, model);
+
+        // Now convert Anthropic response to OpenAI chat/completions format
+        const chatResponse = anthropicToChatResponse(anthropicResp, model);
+
+        logRequest({ tool: "codex", model, providerId: provider.id, providerName: provider.name, latencyMs: Date.now() - startTime, status: "ok", kiroCredits: anthropicResp._kiro?.credits });
+
+        const responseId = `resp_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+
+        if (stream) {
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+          res.setHeader("Connection", "keep-alive");
+          res.setHeader("X-Accel-Buffering", "no");
+          const events = generateSSE(chatResponse, model, responseId);
+          for (const event of events) {
+            res.write(event);
+          }
+          res.end();
+          return;
+        }
+
+        res.json(chatToResponsesFormat(chatResponse, model, responseId));
+        return;
+      } catch (err) {
+        if (model && !(err instanceof ApiError)) recordError(model);
+        if (err.name === "AbortError") return next(new ApiError(504, "Kiro API timeout"));
+        if (res.headersSent) { res.end(); return; }
+        next(err);
+        return;
+      }
+    }
+
+    // --- Standard provider: forward to chat/completions ---
     const messages = inputToMessages(req.body.input, req.body.instructions);
 
     // Convert tools

@@ -1,12 +1,14 @@
 import { OpenAICompatAdapter } from "./adapters/openaiCompat.js";
 import { LocalOpenAIAdapter } from "./adapters/localOpenAI.js";
 import { AnthropicCompatAdapter } from "./adapters/anthropicCompat.js";
+import { KiroAdapter } from "./adapters/kiro.js";
 import { envGet } from "./config/envStore.js";
 
 const REGISTRY = {
   "openai-compat": OpenAICompatAdapter,
   "anthropic-compat": AnthropicCompatAdapter,
   "local-openai": LocalOpenAIAdapter,
+  "kiro": KiroAdapter,
 };
 
 const OPTIONAL_API_KEY_TYPES = new Set(["local-openai"]);
@@ -36,6 +38,15 @@ export async function createAdapter(provider) {
   const apiKey = provider.apiKeyRef ? envGet(provider.apiKeyRef) : undefined;
   if (!apiKey && !OPTIONAL_API_KEY_TYPES.has(provider.type)) {
     throw new MissingSecretError(provider.id, provider.apiKeyRef);
+  }
+
+  // Kiro derives its endpoints from the region; it has no user-supplied baseUrl.
+  if (provider.type === "kiro") {
+    return new Adapter({
+      apiKey,
+      providerType: provider.type,
+      region: provider.region || "us-east-1",
+    });
   }
 
   return new Adapter({

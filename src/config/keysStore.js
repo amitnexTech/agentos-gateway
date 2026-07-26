@@ -91,7 +91,7 @@ export function getProvider(id) {
   return readAll().providers.find((p) => p.id === id);
 }
 
-export function addProvider({ name, type, baseUrl, apiKeyRef }) {
+export function addProvider({ name, type, baseUrl, apiKeyRef, region, creditBudget }) {
   const data = readAll();
   const provider = {
     id: newId(),
@@ -104,6 +104,12 @@ export function addProvider({ name, type, baseUrl, apiKeyRef }) {
     lastTestedAt: null,
     status: "untested",
   };
+  // Kiro derives endpoints from region; credit budget is optional per-account.
+  if (type === "kiro") {
+    provider.region = region || "us-east-1";
+    provider.usedCredits = 0;
+    if (creditBudget) provider.creditBudget = creditBudget;
+  }
   data.providers.push(provider);
   writeAll(data);
   return provider;
