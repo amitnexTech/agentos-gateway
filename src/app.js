@@ -4,13 +4,14 @@ import { proxyRouter } from "./routes/proxy.js";
 import { anthropicRouter } from "./routes/anthropic.js";
 import { responsesRouter } from "./routes/responses.js";
 import { errorHandler } from "./lib/errors.js";
+import { adminAuth } from "./lib/adminAuth.js";
 
 export function createApp() {
   const app = express();
   app.use(express.json({ limit: "10mb" }));
 
-  // Dashboard & provider management
-  app.use("/admin", adminRouter);
+  // Dashboard & provider management (secret-protected: it exposes API keys)
+  app.use("/admin", adminAuth, adminRouter);
 
   // OpenAI Chat Completions API
   app.use("/v1", proxyRouter);
