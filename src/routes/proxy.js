@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { lookupProviderForTool, getEnabledModels } from "../config/keysStore.js";
+import { lookupProviderForTool, getToolProvider, getEnabledModels } from "../config/keysStore.js";
 import { createAdapter } from "../registry.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
@@ -37,7 +37,15 @@ proxyRouter.post("/chat/completions", async (req, res, next) => {
   try {
     if (!model) throw new ApiError(400, "Missing 'model' in request body");
 
-    const provider = lookupProviderForTool("openai", model);
+    let provider = lookupProviderForTool("openai", model);
+    if (!provider) {
+      // Passthrough relax (#171 item 3): forward an unknown model id to the
+      // bound provider and let its own error reach the client. Kiro stays strict
+      // (ban risk) and is rejected on this slot below regardless (protocol
+      // mismatch); a disabled provider gets no traffic.
+      const bound = getToolProvider("openai");
+      if (bound && bound.type !== "kiro" && bound.enabled !== false) provider = bound;
+    }
     if (!provider) throw new ApiError(404, `Model "${model}" not available on OpenAI provider`);
 
     // Kiro speaks an Anthropic-shaped protocol, not OpenAI chat/completions.

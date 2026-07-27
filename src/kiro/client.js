@@ -38,29 +38,39 @@ export function resolveKiroModel(model) {
 // alias resolution only when the tool is routed to a Kiro provider.
 //
 // Returns { provider, model } where `model` is what to forward upstream:
-//  - non-Kiro provider → the raw id, untouched
-//  - Kiro provider → the resolved (short) id when a dated id was sent
-//  - no match → { provider: null, model: rawModel } (caller surfaces 404)
+//  - non-Kiro provider -> the raw id, untouched, ALWAYS forwarded to the bound
+//    provider (the configured list is advisory, not a gate — #171 item 3)
+//  - Kiro provider -> the resolved (short) id when a dated id was sent; only
+//    configured ids forward (ban risk), an unconfigured id -> null
+//  - no provider bound -> { provider: null, model: rawModel } (caller surfaces 404)
 //
-// The lookup itself (lookupProviderForTool) already enforces that the model is
-// in the provider's configured list, so Kiro never receives an unconfigured id
-// (ban risk). The redundant getToolModels() re-check that used to live in each
-// route's Kiro branch is gone — this single binding check is enough (#171 item 4).
+// Gating is Kiro-only: sending Kiro an unconfigured model id is a ban risk, so
+// the strict list check stays for Kiro. Passthrough providers recognise ids they
+// don't advertise, so an unknown id is forwarded and the provider's own response
+// (or error) is the source of truth — our local 404 used to mask the real
+// upstream answer (#171 item 3). The redundant getToolModels() re-check that
+// used to live in each route's Kiro branch is gone (#171 item 4).
 export function lookupModelForTool(tool, rawModel) {
-  let provider = lookupProviderForTool(tool, rawModel);
-  if (provider) return { provider, model: rawModel };
+  const bound = getToolProvider(tool);
 
-  // Kiro's catalog uses short names; a date-suffixed id only matches a binding
-  // after resolution. Non-Kiro providers get no retry — their catalog is their
-  // own concern. (Whether to relax that for passthrough providers is #171 item
-  // 3, deferred until Amit decides; gating stays strict here.)
-  if (getToolProvider(tool)?.type === "kiro") {
+  // Kiro is strict: only forward ids configured on the bound Kiro provider
+  // (after dated-id alias resolution). An unmatched id is rejected (404).
+  if (bound?.type === "kiro") {
+    let provider = lookupProviderForTool(tool, rawModel);
+    if (provider) return { provider, model: rawModel };
     const model = resolveKiroModel(rawModel);
     if (model !== rawModel) {
       provider = lookupProviderForTool(tool, model);
       if (provider) return { provider, model };
     }
+    return { provider: null, model: rawModel };
   }
+
+  // Passthrough (non-Kiro) provider — #171 item 3: forward the raw id untouched
+  // regardless of the configured list; the provider's own response is the source
+  // of truth. A disabled bound provider is not relaxed (no traffic to disabled).
+  if (bound && bound.enabled !== false) return { provider: bound, model: rawModel };
+
   return { provider: null, model: rawModel };
 }
 
