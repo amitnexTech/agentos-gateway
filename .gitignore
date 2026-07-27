@@ -9,3 +9,6 @@ dist/
 # token; .kiro/steering is a hardlink into ~/.config (global rules, not project)
 .claude/
 .kiro/
+
+# graphify knowledge graph — regenerable (run /graphify or `graphify --update`)
+graphify-out/
