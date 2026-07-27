@@ -7,7 +7,7 @@ Unified AI API gateway with a browser dashboard. One `localhost` URL for Claude 
 ```
 Claude Code ─→ localhost:9000/v1/messages    (Anthropic format)  ─→ routing["claude"] provider
 Codex       ─→ localhost:9000/v1/responses   (OpenAI Responses)  ─→ routing["codex"] provider
-Kiro/Any    ─→ localhost:9000/v1/chat/completions (OpenAI Chat)  ─→ routing["openai"] provider
+Any OpenAI  ─→ localhost:9000/v1/chat/completions (OpenAI Chat)  ─→ routing["openai"] provider
 Dashboard   ─→ localhost:9000/admin
 Logs        ─→ localhost:9000/admin/logs
 ```
@@ -25,38 +25,57 @@ src/
 │   ├── admin.js           # Dashboard API + routing + provider CRUD
 │   ├── adminPage.js       # Dashboard HTML (inline, no build step)
 │   ├── logPage.js         # Request log page HTML
-│   ├── proxy.js           # /v1/chat/completions (OpenAI)
-│   ├── anthropic.js       # /v1/messages (Claude Code) + model alias
-│   └── responses.js       # /v1/responses (Codex)
+│   ├── kiroAccount.js     # Kiro account CRUD (Kiro-specific façade over providers)
+│   ├── proxy.js           # /v1/chat/completions (OpenAI Chat) — protocol glue
+│   ├── anthropic.js       # /v1/messages (Claude Code) — protocol glue only
+│   └── responses.js       # /v1/responses (Codex) — protocol glue only
+├── kiro/                  # Kiro provider: Anthropic-shaped requests over its own wire protocol
+│   ├── client.js          # Kiro execution + Kiro-only model-id alias resolution
+│   ├── converter.js       # Anthropic Messages → Kiro payload
+│   ├── stream.js          # Kiro stream → Anthropic SSE converter
+│   ├── api.js             # Kiro header construction + management-plane calls
+│   └── config.js          # Kiro hosts, regions, x-amz-target constants
 ├── config/
 │   ├── keysStore.js       # Provider + model + routing registry (keys.json)
 │   ├── envStore.js        # Secrets store (data/.env)
 │   ├── usageStore.js      # Request/token tracking
-│   └── logStore.js        # In-memory request log (last 200)
+│   └── logStore.js        # Request log (last 200, persisted to logs.json)
 ├── adapters/
 │   ├── base.js            # Abstract adapter
 │   ├── openaiCompat.js    # OpenAI-compatible providers
-│   ├── anthropicCompat.js # Anthropic-compatible providers
-│   └── localOpenAI.js     # Local providers (no auth)
+│   ├── anthropicCompat.js # Anthropic-compatible providers (passthrough /v1/messages)
+│   ├── localOpenAI.js     # Local providers (no auth)
+│   └── kiro.js            # Kiro adapter (URLs/headers; protocol handled by kiro/)
 ├── lib/
+│   ├── proxyExecute.js    # Shared upstream fetch + timeout + error map + SSE headers
+│   ├── anthropicSse.js    # Anthropic SSE passthrough + model/usage extraction
+│   ├── stream.js          # Generic OpenAI SSE stream piping
 │   ├── errors.js          # Error handling
-│   ├── stream.js          # SSE stream piping
 │   ├── modelFetch.js      # Auto-fetch models (with /v1 auto-detection)
 │   ├── upstreamError.js   # Upstream error extraction
-│   └── providerProbe.js   # Provider health check
+│   ├── providerProbe.js   # Provider health check
+│   └── adminAuth.js       # Dashboard HTTP-Basic auth (admin token)
 data/                      # Runtime data (gitignored)
 ├── keys.json              # Provider + routing config
 ├── .env                   # API keys (secrets)
+├── logs.json              # Request log (last 200, survives restart)
 └── usage.json             # Usage stats
 ```
 
-## Provider Types (3 only)
+## Provider Types (4)
 
 | Type | Use For | Auth |
 |------|---------|------|
 | `openai-compat` | OpenRouter, Requesty, Groq, Together, any OpenAI-format API | API key |
 | `anthropic-compat` | Anthropic direct, Lumosel, any Anthropic-format API | API key |
 | `local-openai` | Ollama, LM Studio, llama.cpp | None |
+| `kiro` | Kiro (AWS CodeWhisperer) via `ksk_` API key — Anthropic-shaped requests over its own wire protocol | API key |
+
+A `kiro` provider is reachable only via the `claude` (`/v1/messages`) and `codex`
+(`/v1/responses`) slots — its protocol is not OpenAI chat, so the `openai` slot
+rejects it. Model-id aliasing (dated Claude names → Kiro's short catalog names)
+is Kiro-only and lives in `kiro/client.js`; non-Kiro providers receive the raw
+model id the client sent, untouched.
 
 ## Key Features
 

@@ -49,7 +49,19 @@ function creditAccumulator(providerId, credits) {
   }
 }
 
-export function logRequest({ tool, model, providerId, providerName, latencyMs, status, error, responseModel, usage, kiroCredits }) {
+// Normalise a model id so cosmetic differences don't look like a swap.
+// "claude-opus-4.8" / "claude-opus-4-8" / "claude-opus-4-8-20250514" all collapse
+// to the same key. Anything left over is a genuine difference.
+function normalizeModel(m) {
+  return String(m || "")
+    .toLowerCase()
+    .replace(/-\d{8}$/, "")
+    .replace(/[._]/g, "-")
+    .replace(/-+/g, "-")
+    .trim();
+}
+
+export function logRequest({ tool, rawModel, model, providerId, providerName, latencyMs, status, error, responseModel, responseId, usage, kiroCredits }) {
   // Approximate cost calculation (per million tokens)
   // Claude Sonnet: $3/M input, $15/M output, cache read 90% off
   // Claude Opus: $15/M input, $75/M output
@@ -74,17 +86,28 @@ export function logRequest({ tool, model, providerId, providerName, latencyMs, s
     creditAccumulator(providerId, kiroCredits);
   }
 
+  // Output tokens per second. This is the signal that actually catches a silent
+  // swap: a proxy that answers "opus" with haiku still echoes the opus name, but
+  // it cannot fake the generation speed. Haiku runs several times faster.
+  let tps = null;
+  if (usage && usage.output_tokens > 0 && latencyMs > 0) {
+    tps = Math.round((usage.output_tokens / (latencyMs / 1000)) * 10) / 10;
+  }
+
   const entry = {
     ts: new Date().toISOString(),
     tool,
+    rawModel: rawModel && rawModel !== model ? rawModel : null,
     model,
     providerId,
     providerName,
     latencyMs: Math.round(latencyMs),
+    tps,
     status,
     error: error || null,
     responseModel: responseModel || null,
-    modelMismatch: responseModel && responseModel !== model ? true : false,
+    responseId: responseId || null,
+    modelMismatch: Boolean(responseModel) && normalizeModel(responseModel) !== normalizeModel(model),
     usage: usage || null,
     cost,
     kiroCredits: kiroCredits != null ? Math.round(kiroCredits * 1000000) / 1000000 : null,

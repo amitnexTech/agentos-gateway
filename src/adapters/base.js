@@ -42,8 +42,7 @@ export class ProviderAdapter {
     };
   }
 
-  // Phase 2 hook: API-key adapters return the key; OAuth adapters receive a
-  // live access token via the registry, so this just surfaces the credential.
+  // Surface the credential the adapter authenticates with.
   async getCredentials() {
     return { apiKey: this.apiKey };
   }

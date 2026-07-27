@@ -46,7 +46,7 @@ export function renderLogPage() {
     <header>
       <div>
         <h1>Request Logs</h1>
-        <div style="margin-top:4px;color:var(--muted);font-size:13px">Last 200 requests (in-memory, resets on restart)</div>
+        <div style="margin-top:4px;color:var(--muted);font-size:13px">Last 200 requests (persisted across restarts)</div>
       </div>
       <div class="actions">
         <span class="pill" id="countPill">0 entries</span>
@@ -68,7 +68,7 @@ export function renderLogPage() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th>Tokens (in/out/cache)</th><th>Cost</th><th>Kiro Cr</th><th>Latency</th><th>Status</th><th>Error</th></tr>
+          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th>Tokens (in/out/cache)</th><th>Cost</th><th>Kiro Cr</th><th>Latency</th><th title="Output tokens per second — the speed fingerprint of the model that actually ran">tok/s</th><th>Status</th><th>Error</th></tr>
         </thead>
         <tbody id="logBody"></tbody>
       </table>
@@ -110,20 +110,23 @@ export function renderLogPage() {
         el("creditsPill").textContent = totalCredits.toFixed(4) + " cr (Kiro)";
         el("tokenPill").textContent = totalTokens.toLocaleString() + " tokens";
         if (!logs.length) {
-          el("logBody").innerHTML = '<tr><td colspan="10"><div class="empty">No requests logged yet. Use Claude Code, Codex, or any tool to generate traffic.</div></td></tr>';
+          el("logBody").innerHTML = '<tr><td colspan="11"><div class="empty">No requests logged yet. Use Claude Code, Codex, or any tool to generate traffic.</div></td></tr>';
           return;
         }
         el("logBody").innerHTML = logs.map(l => {
-          const modelCell = l.responseModel
+          const alias = l.rawModel ? '<span class="mono" style="color:var(--muted)" title="Client asked for this; the gateway alias-mapped it">'+escapeHtml(l.rawModel)+' ⇒ </span>' : '';
+          const modelCell = alias + (l.responseModel
             ? (l.modelMismatch
               ? '<span class="mono">'+escapeHtml(l.model)+'</span> → <span class="badge error" title="MISMATCH! Requested '+escapeHtml(l.model)+' but got '+escapeHtml(l.responseModel)+'">'+escapeHtml(l.responseModel)+' ⚠</span>'
               : '<span class="mono">'+escapeHtml(l.model)+'</span> → <span class="badge ok">'+escapeHtml(l.responseModel)+'</span>')
-            : '<span class="mono">'+escapeHtml(l.model)+'</span>';
+            : '<span class="mono">'+escapeHtml(l.model)+'</span>')
+            + (l.responseId ? '<div class="mono" style="color:var(--muted);font-size:11px" title="Upstream message id. Real Anthropic ids look like msg_01… — a synthetic shape means a proxy generated it.">'+escapeHtml(l.responseId)+'</div>' : '');
           const tokenCell = l.usage
             ? '<span class="mono">'+l.usage.input_tokens+'↓ '+l.usage.output_tokens+'↑'+(l.usage.cache_read?' C:'+l.usage.cache_read+'r':'')+(l.usage.cache_write?' '+l.usage.cache_write+'w':'')+'</span>'
             : '<span style="color:var(--muted)">—</span>';
           const costCell = l.cost !== null ? '<span class="mono">$'+l.cost.toFixed(4)+'</span>' : '—';
           const creditsCell = l.kiroCredits ? '<span class="mono">'+l.kiroCredits.toFixed(4)+' cr</span>' : '';
+          const tpsCell = l.tps != null ? '<span class="mono">'+l.tps.toFixed(1)+'</span>' : '<span style="color:var(--muted)">—</span>';
           return '<tr>' +
             '<td class="mono">'+formatTime(l.ts)+'</td>' +
             '<td><span class="badge '+escapeHtml(l.tool)+'">'+escapeHtml(l.tool)+'</span></td>' +
@@ -133,12 +136,13 @@ export function renderLogPage() {
             '<td>'+costCell+'</td>' +
             '<td>'+creditsCell+'</td>' +
             '<td><span class="latency '+latencyClass(l.latencyMs)+'">'+formatLatency(l.latencyMs)+'</span></td>' +
+            '<td>'+tpsCell+'</td>' +
             '<td><span class="badge '+escapeHtml(l.status)+'">'+escapeHtml(l.status)+'</span></td>' +
             '<td class="error-cell" title="'+escapeHtml(l.error||"")+'">'+escapeHtml(l.error||"—")+'</td>' +
           '</tr>';
         }).join("");
       } catch(e) {
-        el("logBody").innerHTML = '<tr><td colspan="10"><div class="empty">Failed to load logs: '+escapeHtml(e.message)+'</div></td></tr>';
+        el("logBody").innerHTML = '<tr><td colspan="11"><div class="empty">Failed to load logs: '+escapeHtml(e.message)+'</div></td></tr>';
       }
     }
 

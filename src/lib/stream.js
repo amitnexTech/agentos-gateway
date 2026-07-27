@@ -7,7 +7,7 @@ async function writeSse(client, payload) {
   client.flush?.();
 }
 
-async function* chunksFrom(stream) {
+export async function* chunksFrom(stream) {
   if (!stream) return;
   if (typeof stream[Symbol.asyncIterator] === "function") {
     yield* stream;

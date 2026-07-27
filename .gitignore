@@ -4,3 +4,8 @@ data/
 *.log
 dist/
 .DS_Store
+
+# machine-local agent config — .claude/settings.json carries a live provider
+# token; .kiro/steering is a hardlink into ~/.config (global rules, not project)
+.claude/
+.kiro/

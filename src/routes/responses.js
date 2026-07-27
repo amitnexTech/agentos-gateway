@@ -1,13 +1,12 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { lookupProviderForTool, getEnabledModels, getToolModels } from "../config/keysStore.js";
-import { createAdapter, MissingSecretError, UnknownProviderTypeError } from "../registry.js";
-import { recordRequest, recordError } from "../config/usageStore.js";
-import { logRequest } from "../config/logStore.js";
-import { ApiError } from "../lib/errors.js";
-import { upstreamErrorMessage } from "../lib/upstreamError.js";
-import { anthropicToKiro } from "../kiro/converter.js";
+import { lookupModelForTool, executeKiro } from "../kiro/client.js";
 import { collectKiroResponse } from "../kiro/stream.js";
+import { callUpstream, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
+import { recordError } from "../config/usageStore.js";
+import { logRequest } from "../config/logStore.js";
+import { createAdapter } from "../registry.js";
+import { ApiError } from "../lib/errors.js";
 
 export const responsesRouter = Router();
 
@@ -253,126 +252,71 @@ function generateSSE(chatResp, model, responseId) {
 
 // POST /v1/responses — OpenAI Responses API (for Codex)
 responsesRouter.post("/responses", async (req, res, next) => {
-  const model = req.body?.model;
+  const rawModel = req.body?.model;
   const stream = req.body?.stream !== false; // default true for Codex
+  let provider, model;
 
   try {
-    if (!model) throw new ApiError(400, "Missing 'model' in request body");
+    if (!rawModel) throw new ApiError(400, "Missing 'model' in request body");
 
-    const provider = lookupProviderForTool("codex", model);
-    if (!provider) throw new ApiError(404, `Model "${model}" not available on Codex provider`);
+    ({ provider, model } = lookupModelForTool("codex", rawModel));
+    if (!provider) throw new ApiError(404, `Model "${rawModel}" not available on Codex provider`);
 
     let adapter;
     try {
       adapter = await createAdapter(provider);
     } catch (err) {
-      if (err instanceof MissingSecretError) throw new ApiError(503, "Provider API key is missing");
-      if (err instanceof UnknownProviderTypeError) throw new ApiError(503, err.message);
-      throw err;
+      throw adapterErrorToApiError(err);
     }
 
-    // --- Kiro direct provider: convert to Kiro format, get response, convert to Responses format ---
+    const responseId = `resp_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+
+    // --- Kiro provider: Responses input → Anthropic → Kiro, then back to Responses ---
     if (provider.type === "kiro") {
-      const startTime = Date.now();
-      try {
-        // Model validation: reject unavailable models BEFORE sending to Kiro API (ban risk)
-        const allowedModels = getToolModels("codex");
-        if (allowedModels.length && !allowedModels.includes(model)) {
-          throw new ApiError(400, `Model "${model}" is not configured for Kiro. Available: ${allowedModels.join(", ")}`);
-        }
+      const messages = inputToMessages(req.body.input, req.body.instructions);
+      const anthropicTools = (req.body.tools || [])
+        .filter((t) => t.type === "function")
+        .map((t) => ({
+          name: t.name || "",
+          description: t.description || "",
+          input_schema: t.parameters || { type: "object", properties: {} },
+        }));
 
-        // Convert Responses input to Anthropic-style messages
-        const messages = inputToMessages(req.body.input, req.body.instructions);
+      const anthropicReq = {
+        messages,
+        max_tokens: req.body.max_output_tokens || 16000,
+      };
+      if (anthropicTools.length) anthropicReq.tools = anthropicTools;
 
-        // Convert tools from Responses format to Anthropic format
-        const anthropicTools = (req.body.tools || [])
-          .filter((t) => t.type === "function")
-          .map((t) => ({
-            name: t.name || "",
-            description: t.description || "",
-            input_schema: t.parameters || { type: "object", properties: {} },
-          }));
+      const { upstream, startTime } = await executeKiro({
+        adapter, provider, tool: "codex", model, rawModel, anthropicReq,
+      });
 
-        // Build Anthropic-style request for converter
-        const anthropicReq = {
-          model,
-          messages,
-          max_tokens: req.body.max_output_tokens || 16000,
-        };
-        if (anthropicTools.length) {
-          anthropicReq.tools = anthropicTools;
-        }
+      // Collect Kiro response (Anthropic shape), then bridge to chat/completions
+      // and finally to Responses format. Streaming is generated from the
+      // collected response — Kiro's native stream is Anthropic-shaped, so we
+      // collect once and emit Responses SSE events from it.
+      const anthropicResp = await collectKiroResponse(upstream.body, model);
+      const chatResponse = anthropicToChatResponse(anthropicResp, model);
+      logRequest({
+        tool: "codex", rawModel, model, providerId: provider.id, providerName: provider.name,
+        latencyMs: Date.now() - startTime, status: "ok",
+        kiroCredits: anthropicResp._kiro?.credits,
+      });
 
-        // Convert to Kiro payload
-        const kiroHeaders = adapter.getRequestHeaders();
-        const kiroUrl = adapter.getRequestUrl(model, { stream: false });
-        const kiroPayload = anthropicToKiro(anthropicReq);
-
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 300000);
-
-        let upstream;
-        try {
-          upstream = await fetch(kiroUrl, {
-            method: "POST",
-            headers: kiroHeaders,
-            body: JSON.stringify(kiroPayload),
-            signal: controller.signal,
-          });
-        } finally {
-          clearTimeout(timeout);
-        }
-
-        if (!upstream.ok) {
-          recordError(model);
-          const detail = await upstream.text().catch(() => "");
-          logRequest({ tool: "codex", model, providerId: provider.id, providerName: provider.name, latencyMs: Date.now() - startTime, status: "error", error: `${upstream.status}: ${detail.slice(0, 200)}` });
-          if (upstream.status === 403) {
-            throw new ApiError(502, `Kiro rejected the API key (403). Check the key is still valid in the Kiro portal: ${detail.slice(0, 200)}`);
-          }
-          throw new ApiError(upstream.status >= 500 ? 502 : upstream.status, `Kiro API error (${upstream.status}): ${detail.slice(0, 200)}`);
-        }
-
-        recordRequest(model);
-
-        // Collect Kiro response and convert to Anthropic format first
-        const anthropicResp = await collectKiroResponse(upstream.body, model);
-
-        // Now convert Anthropic response to OpenAI chat/completions format
-        const chatResponse = anthropicToChatResponse(anthropicResp, model);
-
-        logRequest({ tool: "codex", model, providerId: provider.id, providerName: provider.name, latencyMs: Date.now() - startTime, status: "ok", kiroCredits: anthropicResp._kiro?.credits });
-
-        const responseId = `resp_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
-
-        if (stream) {
-          res.setHeader("Content-Type", "text/event-stream");
-          res.setHeader("Cache-Control", "no-cache");
-          res.setHeader("Connection", "keep-alive");
-          res.setHeader("X-Accel-Buffering", "no");
-          const events = generateSSE(chatResponse, model, responseId);
-          for (const event of events) {
-            res.write(event);
-          }
-          res.end();
-          return;
-        }
-
-        res.json(chatToResponsesFormat(chatResponse, model, responseId));
-        return;
-      } catch (err) {
-        if (model && !(err instanceof ApiError)) recordError(model);
-        if (err.name === "AbortError") return next(new ApiError(504, "Kiro API timeout"));
-        if (res.headersSent) { res.end(); return; }
-        next(err);
+      if (stream) {
+        setSseHeaders(res);
+        for (const event of generateSSE(chatResponse, model, responseId)) res.write(event);
+        res.end();
         return;
       }
+
+      res.json(chatToResponsesFormat(chatResponse, model, responseId));
+      return;
     }
 
-    // --- Standard provider: forward to chat/completions ---
+    // --- Standard provider: Responses input → chat/completions, then to Responses ---
     const messages = inputToMessages(req.body.input, req.body.instructions);
-
-    // Convert tools
     const chatTools = (req.body.tools || [])
       .filter((t) => t.type === "function")
       .map((t) => ({
@@ -380,58 +324,30 @@ responsesRouter.post("/responses", async (req, res, next) => {
         function: { name: t.name || "", description: t.description || "", parameters: t.parameters || { type: "object", properties: {} } },
       }));
 
-    // Build chat/completions request
     const chatRequest = {
       model,
       messages,
       max_tokens: req.body.max_output_tokens || 16000,
-      stream: false, // We generate our own SSE from non-streaming response
+      stream: false, // we generate our own SSE from the non-streaming response
     };
     if (chatTools.length) {
       chatRequest.tools = chatTools;
       chatRequest.tool_choice = "auto";
     }
 
-    // Forward to provider's chat/completions endpoint
-    const chatUrl = adapter.getRequestUrl(model, { stream: false });
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 300000);
-    const startTime = Date.now();
+    const { upstream, startTime } = await callUpstream({
+      adapter, body: chatRequest, model, rawModel, tool: "codex", provider,
+    });
+    logRequest({
+      tool: "codex", rawModel, model, providerId: provider.id, providerName: provider.name,
+      latencyMs: Date.now() - startTime, status: "ok",
+    });
 
-    let upstream;
-    try {
-      upstream = await fetch(chatUrl, {
-        method: "POST",
-        headers: adapter.getRequestHeaders(),
-        body: JSON.stringify(adapter.translateRequest(chatRequest)),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    if (!upstream.ok) {
-      recordError(model);
-      const detail = await upstreamErrorMessage(upstream);
-      logRequest({ tool: "codex", model, providerId: provider.id, providerName: provider.name, latencyMs: Date.now() - startTime, status: "error", error: `${upstream.status}: ${detail.slice(0, 200)}` });
-      throw new ApiError(upstream.status >= 500 ? 502 : upstream.status, `Upstream error (${upstream.status}): ${detail}`);
-    }
-
-    recordRequest(model);
-    logRequest({ tool: "codex", model, providerId: provider.id, providerName: provider.name, latencyMs: Date.now() - startTime, status: "ok" });
     const chatResponse = adapter.translateResponse(await upstream.json());
-    const responseId = `resp_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
 
     if (stream) {
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-
-      const events = generateSSE(chatResponse, model, responseId);
-      for (const event of events) {
-        res.write(event);
-      }
+      setSseHeaders(res);
+      for (const event of generateSSE(chatResponse, model, responseId)) res.write(event);
       res.end();
       return;
     }

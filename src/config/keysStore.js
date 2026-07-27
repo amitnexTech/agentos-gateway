@@ -6,7 +6,9 @@ import { dataDir } from "./envStore.js";
 // Tool slots: each tool/agent can route to a different provider
 // "claude"  = /v1/messages (Anthropic Messages API — Claude Code)
 // "codex"   = /v1/responses (OpenAI Responses API — Codex)
-// "openai"  = /v1/chat/completions (OpenAI Chat API — Kiro, Cursor, etc.)
+// "openai"  = /v1/chat/completions (OpenAI Chat API — Cursor, etc.)
+//            Kiro is NOT supported on this slot (its protocol is Anthropic-
+//            shaped); route Kiro via the "claude" or "codex" slot instead.
 export const TOOL_SLOTS = ["claude", "codex", "openai"];
 
 export function keysPath() {

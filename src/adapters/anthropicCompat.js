@@ -1,9 +1,11 @@
 import { ProviderAdapter } from "./base.js";
 
-// Anthropic-compatible provider adapter. For providers that speak the
-// Anthropic Messages API natively (Anthropic direct, Kiro Gateway, etc.).
-// The /v1/messages route forwards directly to these; the /v1/chat/completions
-// route is NOT supported for this adapter type (use openai-compat for that).
+// Anthropic-compatible provider adapter — for providers that speak the
+// Anthropic Messages API natively (Anthropic direct, Lumosel, etc.). The
+// /v1/messages route forwards directly to these. Kiro has its own adapter type
+// (adapters/kiro.js): it accepts Anthropic-shaped requests but its wire protocol
+// differs, so it is handled via kiro/client.js rather than this passthrough.
+// /v1/chat/completions is NOT supported for this adapter type; use openai-compat.
 export class AnthropicCompatAdapter extends ProviderAdapter {
   // This adapter is used by the anthropic route directly (passthrough),
   // not by the OpenAI chat/completions proxy. So getRequestUrl is for
@@ -12,11 +14,13 @@ export class AnthropicCompatAdapter extends ProviderAdapter {
     return `${this.baseUrl}/messages`;
   }
 
-  getRequestHeaders() {
+  // anthropicVersion overrides the default (2023-06-01) so the /v1/messages
+  // route can forward the version the client actually sent.
+  getRequestHeaders({ anthropicVersion } = {}) {
     return {
       "Content-Type": "application/json",
       "x-api-key": this.apiKey || "",
-      "anthropic-version": "2023-06-01",
+      "anthropic-version": anthropicVersion || "2023-06-01",
       ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
     };
   }
