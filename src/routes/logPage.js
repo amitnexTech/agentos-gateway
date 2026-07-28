@@ -131,7 +131,7 @@ export function renderLogPage() {
             '<td class="mono">'+formatTime(l.ts)+'</td>' +
             '<td><span class="badge '+escapeHtml(l.tool)+'">'+escapeHtml(l.tool)+'</span></td>' +
             '<td>'+modelCell+'</td>' +
-            '<td>'+escapeHtml(l.providerName)+'</td>' +
+            '<td>'+escapeHtml(l.providerName)+(l.fallback?' <span class="badge" style="background:#fef3e2;color:#92400e" title="Served by a fallback provider after the primary failed">fallback</span>':'')+'</td>' +
             '<td>'+tokenCell+'</td>' +
             '<td>'+costCell+'</td>' +
             '<td>'+creditsCell+'</td>' +

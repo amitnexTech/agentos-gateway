@@ -61,7 +61,7 @@ function normalizeModel(m) {
     .trim();
 }
 
-export function logRequest({ tool, rawModel, model, providerId, providerName, latencyMs, status, error, responseModel, responseId, usage, kiroCredits }) {
+export function logRequest({ tool, rawModel, model, providerId, providerName, latencyMs, status, error, responseModel, responseId, usage, kiroCredits, fallback }) {
   // Approximate cost calculation (per million tokens)
   // Claude Sonnet: $3/M input, $15/M output, cache read 90% off
   // Claude Opus: $15/M input, $75/M output
@@ -111,6 +111,7 @@ export function logRequest({ tool, rawModel, model, providerId, providerName, la
     usage: usage || null,
     cost,
     kiroCredits: kiroCredits != null ? Math.round(kiroCredits * 1000000) / 1000000 : null,
+    fallback: Boolean(fallback),
   };
   logs.unshift(entry);
   if (logs.length > MAX_ENTRIES) logs.length = MAX_ENTRIES;

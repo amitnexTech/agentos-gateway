@@ -9,10 +9,13 @@
 // the raw model id untouched. lookupModelForTool() is the only place that
 // applies Kiro aliasing, and only when the tool is actually routed to Kiro.
 
-import { lookupProviderForTool, getToolProvider } from "../config/keysStore.js";
+import { lookupProviderForTool, getToolProvider, fallbackProviders, getProviderModels } from "../config/keysStore.js";
 import { recordRequest, recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
+import { isFallbackEnabled } from "../config/keysStore.js";
+import { isRetryableApiError } from "../lib/fallback.js";
 import { ApiError } from "../lib/errors.js";
+import { createAdapter } from "../registry.js";
 import { anthropicToKiro } from "./converter.js";
 
 // Explicit aliases ONLY where stripping the -YYYYMMDD suffix does NOT yield a
@@ -134,4 +137,43 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, an
 
   recordRequest(model);
   return { upstream, startTime };
+}
+
+// executeKiro with auto-fallback to other Kiro providers. Kiro stays strict
+// — sending it an unconfigured model id is a ban risk — so a fallback
+// candidate is only tried if it advertises the resolved `model` (or the raw
+// id). Returns the provider/adapter that served, plus `fallback`. Off by
+// default; when fallbackEnabled is false this is exactly executeKiro.
+//
+// Each failed attempt is logged as an error entry by executeKiro, so every
+// Kiro account that was tried shows up in the log (spend clarity).
+export async function executeKiroWithFallback({ adapter: primaryAdapter, provider: primaryProvider, tool, model, rawModel, anthropicReq }) {
+  let lastErr;
+  try {
+    const r = await executeKiro({ adapter: primaryAdapter, provider: primaryProvider, tool, model, rawModel, anthropicReq });
+    return { ...r, provider: primaryProvider, adapter: primaryAdapter, fallback: false };
+  } catch (err) {
+    lastErr = err;
+    if (!isFallbackEnabled() || !isRetryableApiError(err)) throw err;
+  }
+
+  for (const fp of fallbackProviders(tool, primaryProvider)) {
+    // Strict: only fall back to a Kiro provider that advertises this model.
+    const configured = getProviderModels(fp.id);
+    if (!configured.includes(model) && !configured.includes(rawModel)) continue;
+    let adapter;
+    try {
+      adapter = await createAdapter(fp);
+    } catch {
+      continue;
+    }
+    try {
+      const r = await executeKiro({ adapter, provider: fp, tool, model, rawModel, anthropicReq });
+      return { ...r, provider: fp, adapter, fallback: true };
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableApiError(err)) throw err;
+    }
+  }
+  throw lastErr;
 }

@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { lookupModelForTool, executeKiro } from "../kiro/client.js";
+import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
 import { streamKiroToAnthropic, collectKiroResponse } from "../kiro/stream.js";
-import { callUpstream, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
+import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
 import { pipeAnthropicSse, anthropicUsage } from "../lib/anthropicSse.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
@@ -39,7 +39,7 @@ anthropicRouter.post("/messages", async (req, res, next) => {
 
     // --- Kiro provider: translate Anthropic → Kiro protocol ---
     if (provider.type === "kiro") {
-      const { upstream, startTime } = await executeKiro({
+      const { upstream, startTime, provider: served, fallback } = await executeKiroWithFallback({
         adapter, provider, tool: "claude", model, rawModel, anthropicReq: req.body,
       });
 
@@ -47,9 +47,9 @@ anthropicRouter.post("/messages", async (req, res, next) => {
         setSseHeaders(res);
         const kiroUsage = await streamKiroToAnthropic(upstream.body, res, model);
         logRequest({
-          tool: "claude", rawModel, model, providerId: provider.id, providerName: provider.name,
+          tool: "claude", rawModel, model, providerId: served.id, providerName: served.name,
           latencyMs: Date.now() - startTime, status: "ok", responseModel: model,
-          kiroCredits: kiroUsage.credits,
+          kiroCredits: kiroUsage.credits, fallback,
           usage: { input_tokens: 0, output_tokens: kiroUsage.outputTokens },
         });
         res.end();
@@ -58,9 +58,9 @@ anthropicRouter.post("/messages", async (req, res, next) => {
 
       const responseJson = await collectKiroResponse(upstream.body, model);
       logRequest({
-        tool: "claude", rawModel, model, providerId: provider.id, providerName: provider.name,
+        tool: "claude", rawModel, model, providerId: served.id, providerName: served.name,
         latencyMs: Date.now() - startTime, status: "ok", responseModel: model,
-        kiroCredits: responseJson._kiro?.credits,
+        kiroCredits: responseJson._kiro?.credits, fallback,
         usage: responseJson.usage || null,
       });
       delete responseJson._kiro; // internal field, not part of the Anthropic spec
@@ -69,7 +69,7 @@ anthropicRouter.post("/messages", async (req, res, next) => {
     }
 
     // --- Standard Anthropic-compat provider: forward directly via the adapter ---
-    const { upstream, startTime } = await callUpstream({
+    const { upstream, startTime, provider: served, fallback } = await callUpstreamWithFallback({
       adapter, body: { ...req.body, model }, model, rawModel, tool: "claude", provider,
       anthropicVersion: req.headers["anthropic-version"],
     });
@@ -78,8 +78,8 @@ anthropicRouter.post("/messages", async (req, res, next) => {
       setSseHeaders(res);
       const { responseModel, responseId, usage } = await pipeAnthropicSse(upstream, res);
       logRequest({
-        tool: "claude", rawModel, model, providerId: provider.id, providerName: provider.name,
-        latencyMs: Date.now() - startTime, status: "ok",
+        tool: "claude", rawModel, model, providerId: served.id, providerName: served.name,
+        latencyMs: Date.now() - startTime, status: "ok", fallback,
         responseModel, responseId, usage: anthropicUsage(usage),
       });
       res.end();
@@ -88,8 +88,8 @@ anthropicRouter.post("/messages", async (req, res, next) => {
 
     const responseJson = await upstream.json();
     logRequest({
-      tool: "claude", rawModel, model, providerId: provider.id, providerName: provider.name,
-      latencyMs: Date.now() - startTime, status: "ok",
+      tool: "claude", rawModel, model, providerId: served.id, providerName: served.name,
+      latencyMs: Date.now() - startTime, status: "ok", fallback,
       responseModel: responseJson.model || null,
       responseId: responseJson.id || null,
       usage: anthropicUsage(responseJson.usage),

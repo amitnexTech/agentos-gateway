@@ -107,7 +107,15 @@ export function renderAdminPage() {
 
     <!-- Routing Panel -->
     <section style="margin-bottom:16px">
-      <div class="panel-head"><h2>Routing</h2><button id="useAllBtn" type="button" disabled>Use for all</button></div>
+      <div class="panel-head">
+        <h2>Routing</h2>
+        <div style="display:flex;align-items:center;gap:14px">
+          <label title="When the bound provider fails with a retriable error (429/403/5xx/timeout), retry the same request on another enabled provider that speaks the same protocol. Off by default — keeps it clear which account is spending." style="display:flex;align-items:center;gap:6px;flex-direction:row;color:var(--ink);font-size:13px;font-weight:400;margin:0">
+            <input type="checkbox" id="fallbackToggle" style="min-height:auto;width:16px"> Auto-fallback
+          </label>
+          <button id="useAllBtn" type="button" disabled>Use for all</button>
+        </div>
+      </div>
       <div class="panel-body" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px" id="routingPanel">
         <label>Claude Code (/v1/messages)<select id="route-claude"></select></label>
         <label>Codex (/v1/responses)<select id="route-codex"></select></label>
@@ -267,6 +275,7 @@ export function renderAdminPage() {
           state.providers.map(p => '<option value="'+escapeHtml(p.id)+'"'+(p.id===current?' selected':'')+'>'+escapeHtml(p.name)+' ('+p.models.length+' models)</option>').join("");
       }
       el("useAllBtn").disabled = !state.providers.length;
+      el("fallbackToggle").checked = !!state.routing.fallbackEnabled;
     }
 
     function renderProviders() {
@@ -426,6 +435,18 @@ export function renderAdminPage() {
       } catch(err) { setNotice(err.message,"bad"); await refresh(); }
     }
 
+    async function toggleFallback() {
+      const enabled = el("fallbackToggle").checked;
+      try {
+        await api("/admin/routing/fallback", { method: "POST", body: JSON.stringify({ enabled }) });
+        setNotice("Auto-fallback " + (enabled ? "ON — retriable errors retry on a same-protocol provider." : "OFF."), "ok");
+        await refresh();
+      } catch (err) {
+        el("fallbackToggle").checked = !enabled; // revert on failure
+        setNotice(err.message, "bad");
+      }
+    }
+
     async function useForAll() {
       const firstAssigned = el("route-claude").value || el("route-codex").value || el("route-openai").value;
       if (!firstAssigned && state.providers.length) {
@@ -469,6 +490,7 @@ export function renderAdminPage() {
     el("route-claude").addEventListener("change",()=>routingChange("claude"));
     el("route-codex").addEventListener("change",()=>routingChange("codex"));
     el("route-openai").addEventListener("change",()=>routingChange("openai"));
+    el("fallbackToggle").addEventListener("change",toggleFallback);
     el("testProvider").addEventListener("change",updateTestModelsForProvider);
     document.querySelectorAll("[data-preset]").forEach(b=>b.addEventListener("click",()=>applyPreset(b.dataset.preset)));
     updateTypeMode(); refresh();

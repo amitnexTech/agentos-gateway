@@ -4,7 +4,7 @@ import { createAdapter } from "../registry.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
 import { pipeStreamSSE } from "../lib/stream.js";
-import { callUpstream, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
+import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
 import { ApiError } from "../lib/errors.js";
 
 export const proxyRouter = Router();
@@ -70,22 +70,22 @@ proxyRouter.post("/chat/completions", async (req, res, next) => {
       throw new ApiError(400, "Streaming not supported by provider");
     }
 
-    const { upstream, startTime } = await callUpstream({
-      adapter, body: req.body, model, tool: "openai", provider,
+    const { upstream, startTime, provider: served, adapter: servedAdapter, fallback } = await callUpstreamWithFallback({
+      adapter, body: req.body, model, rawModel: model, tool: "openai", provider,
     });
     logRequest({
-      tool: "openai", model, providerId: provider.id, providerName: provider.name,
-      latencyMs: Date.now() - startTime, status: "ok",
+      tool: "openai", model, providerId: served.id, providerName: served.name,
+      latencyMs: Date.now() - startTime, status: "ok", fallback,
     });
 
     if (stream) {
       setSseHeaders(res);
-      await pipeStreamSSE(upstream.body, res, adapter);
+      await pipeStreamSSE(upstream.body, res, servedAdapter);
       res.end();
       return;
     }
 
-    res.json(adapter.translateResponse(await upstream.json()));
+    res.json(servedAdapter.translateResponse(await upstream.json()));
   } catch (err) {
     if (model && !(err instanceof ApiError)) recordError(model);
     if (err.name === "AbortError") return next(new ApiError(504, "Upstream timeout"));

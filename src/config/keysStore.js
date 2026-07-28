@@ -83,6 +83,45 @@ export function setAllToolsProvider(providerId) {
   return data.routing;
 }
 
+// --- Auto-fallback (default OFF) ---------------------------------------
+// When the user opts in (routing.fallbackEnabled === true), a retriable
+// upstream error on a tool's bound provider retries the same request on
+// another enabled provider that speaks the SAME protocol, so the execution
+// path (executeKiro vs callUpstream + anthropicSse vs OpenAI SSE) is
+// unchanged. Default off: the user keeps clarity on which account is
+// spending. Toggle via the dashboard or POST /admin/routing/fallback.
+
+export function isFallbackEnabled() {
+  return readAll().routing.fallbackEnabled === true;
+}
+
+export function setFallbackEnabled(enabled) {
+  const data = readAll();
+  if (enabled) data.routing.fallbackEnabled = true;
+  else delete data.routing.fallbackEnabled;
+  writeAll(data);
+  return data.routing;
+}
+
+// Same-protocol enabled providers to try after `primary` fails, in creation
+// order. The protocol group follows the execution path of the route that
+// selected `primary`, NOT raw type equality:
+//   kiro         -> kiro             (executeKiro path; claude/codex slots)
+//   openai slot  -> openai-compat + local-openai (OpenAI chat SSE path)
+//   claude/codex -> anthropic-compat (anthropic SSE passthrough path)
+// A kiro provider is never offered to the openai slot (and vice versa): their
+// protocols do not match the route's execution path.
+export function fallbackProviders(tool, primary) {
+  if (!primary) return [];
+  let types;
+  if (primary.type === "kiro") types = new Set(["kiro"]);
+  else if (tool === "openai") types = new Set(["openai-compat", "local-openai"]);
+  else types = new Set(["anthropic-compat"]);
+  return readAll().providers.filter(
+    (p) => p.id !== primary.id && p.enabled !== false && types.has(p.type)
+  );
+}
+
 // --- Providers ---------------------------------------------------------
 
 export function listProviders() {

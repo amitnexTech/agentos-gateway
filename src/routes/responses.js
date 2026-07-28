@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { lookupModelForTool, executeKiro } from "../kiro/client.js";
+import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
 import { collectKiroResponse } from "../kiro/stream.js";
-import { callUpstream, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
+import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
 import { createAdapter } from "../registry.js";
@@ -288,7 +288,7 @@ responsesRouter.post("/responses", async (req, res, next) => {
       };
       if (anthropicTools.length) anthropicReq.tools = anthropicTools;
 
-      const { upstream, startTime } = await executeKiro({
+      const { upstream, startTime, provider: served, fallback } = await executeKiroWithFallback({
         adapter, provider, tool: "codex", model, rawModel, anthropicReq,
       });
 
@@ -299,8 +299,8 @@ responsesRouter.post("/responses", async (req, res, next) => {
       const anthropicResp = await collectKiroResponse(upstream.body, model);
       const chatResponse = anthropicToChatResponse(anthropicResp, model);
       logRequest({
-        tool: "codex", rawModel, model, providerId: provider.id, providerName: provider.name,
-        latencyMs: Date.now() - startTime, status: "ok",
+        tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
+        latencyMs: Date.now() - startTime, status: "ok", fallback,
         kiroCredits: anthropicResp._kiro?.credits,
       });
 
@@ -335,15 +335,15 @@ responsesRouter.post("/responses", async (req, res, next) => {
       chatRequest.tool_choice = "auto";
     }
 
-    const { upstream, startTime } = await callUpstream({
+    const { upstream, startTime, provider: served, adapter: servedAdapter, fallback } = await callUpstreamWithFallback({
       adapter, body: chatRequest, model, rawModel, tool: "codex", provider,
     });
     logRequest({
-      tool: "codex", rawModel, model, providerId: provider.id, providerName: provider.name,
-      latencyMs: Date.now() - startTime, status: "ok",
+      tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
+      latencyMs: Date.now() - startTime, status: "ok", fallback,
     });
 
-    const chatResponse = adapter.translateResponse(await upstream.json());
+    const chatResponse = servedAdapter.translateResponse(await upstream.json());
 
     if (stream) {
       setSseHeaders(res);

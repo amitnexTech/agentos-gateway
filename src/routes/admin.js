@@ -13,6 +13,8 @@ import {
   getToolProvider,
   setToolProvider,
   setAllToolsProvider,
+  isFallbackEnabled,
+  setFallbackEnabled,
   TOOL_SLOTS,
   snapshot,
   replace,
@@ -74,6 +76,7 @@ adminRouter.get("/routing", (_req, res) => {
     const provider = getToolProvider(tool);
     detailed[tool] = provider ? { id: provider.id, name: provider.name, type: provider.type } : null;
   }
+  detailed.fallbackEnabled = isFallbackEnabled();
   res.json(detailed);
 });
 
@@ -85,6 +88,18 @@ adminRouter.post("/routing/all", (req, res, next) => {
     requireProvider(providerId);
     const routing = setAllToolsProvider(providerId);
     res.json({ ok: true, routing });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Toggle auto-fallback: POST /admin/routing/fallback { enabled: true|false }
+// Registered before /routing/:tool so "fallback" is not captured as a tool param.
+adminRouter.post("/routing/fallback", (req, res, next) => {
+  try {
+    const { enabled } = req.body || {};
+    const routing = setFallbackEnabled(Boolean(enabled));
+    res.json({ ok: true, fallbackEnabled: isFallbackEnabled(), routing });
   } catch (err) {
     next(err);
   }

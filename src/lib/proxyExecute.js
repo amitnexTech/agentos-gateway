@@ -6,9 +6,11 @@
 
 import { recordRequest, recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
+import { isFallbackEnabled, fallbackProviders } from "../config/keysStore.js";
 import { ApiError } from "./errors.js";
 import { upstreamErrorMessage } from "./upstreamError.js";
-import { MissingSecretError, UnknownProviderTypeError } from "../registry.js";
+import { isRetryableApiError } from "./fallback.js";
+import { MissingSecretError, UnknownProviderTypeError, createAdapter } from "../registry.js";
 
 // Adapter-construction errors → the API error a client should see. Used to be
 // inlined in all three routes (proxy.js had it as a function; the other two
@@ -101,4 +103,62 @@ export async function callUpstream({
 
   recordRequest(model);
   return { upstream, startTime };
+}
+
+// callUpstream with auto-fallback. Same contract as callUpstream for the
+// primary attempt; on a retriable upstream error — and only when the user has
+// opted in via routing.fallbackEnabled — retries on each same-protocol
+// enabled provider in creation order. Returns the provider/adapter that
+// actually served (plus `fallback: true/false`) so the route consumes and
+// logs against the winner, not the primary that failed.
+//
+// Off by default: when fallbackEnabled is false this makes one call and
+// behaves exactly like callUpstream (the winning provider is the primary).
+//
+// Each failed attempt is logged as an error entry by callUpstream itself, so
+// the log shows every provider that was tried — preserving spend clarity.
+export async function callUpstreamWithFallback({
+  adapter: primaryAdapter,
+  body,
+  model,
+  rawModel,
+  tool,
+  provider: primaryProvider,
+  timeoutMs,
+  anthropicVersion,
+}) {
+  let lastErr;
+  try {
+    const r = await callUpstream({
+      adapter: primaryAdapter, body, model, rawModel, tool,
+      provider: primaryProvider, timeoutMs, anthropicVersion,
+    });
+    return { ...r, provider: primaryProvider, adapter: primaryAdapter, fallback: false };
+  } catch (err) {
+    lastErr = err;
+    if (!isFallbackEnabled() || !isRetryableApiError(err)) throw err;
+  }
+
+  for (const fp of fallbackProviders(tool, primaryProvider)) {
+    // Passthrough (#171 item 3): forward the raw id untouched to the fallback
+    // provider; its own response/error is the source of truth.
+    let adapter;
+    try {
+      adapter = await createAdapter(fp);
+    } catch {
+      continue; // missing key / unknown type — skip this candidate silently
+    }
+    try {
+      const r = await callUpstream({
+        adapter, body, model: rawModel, rawModel, tool, provider: fp, timeoutMs, anthropicVersion,
+      });
+      return { ...r, provider: fp, adapter, fallback: true };
+    } catch (err) {
+      lastErr = err;
+      // A non-retriable error on a fallback is a real answer (e.g. 400 from
+      // the winning provider) — surface it rather than burning more accounts.
+      if (!isRetryableApiError(err)) throw err;
+    }
+  }
+  throw lastErr;
 }
