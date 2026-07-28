@@ -92,6 +92,66 @@ function extractToolUses(content) {
 }
 
 /**
+ * Build a Kiro `generateAssistantResponse` payload from already-normalized inputs.
+ *
+ * Shared by both the Anthropic-Messages path (anthropicToKiro) and the Codex
+ * Responses-API path (codexToKiro). These two steps happen before calling here:
+ *   1. Normalize the input format into alternating user/assistant turns.
+ *   2. For each turn, extract toolUses (assistant turns) and toolResults
+ *      (user turns) in Kiro wire format.
+ *
+ * @param {object} options
+ * @param {string} options.systemPrompt - system instructions (prepended to first user)
+ * @param {object[]} options.history - Kiro-format history entries:
+ *   { userInputMessage: { content, modelId, origin, userInputMessageContext? } } or
+ *   { assistantResponseMessage: { content, toolUses? } }
+ * @param {string} options.currentText - current user message text
+ * @param {object[]} [options.currentToolResults] - Kiro-format toolResults for
+ *   the current message: [{ content: [{ text }], status, toolUseId }]
+ * @param {object[]} [options.tools] - Anthropic-format tool definitions
+ *   (each { name, description, input_schema }) — converted to toolSpecification
+ * @param {string} options.model - resolved model id
+ * @param {string} options.conversationId - stable conversation id
+ * @returns {object} Kiro API payload
+ */
+export function buildKiroConversation({ systemPrompt, history, currentText, currentToolResults, tools, model, conversationId }) {
+  let finalCurrentText = currentText || "(empty placeholder)";
+
+  // Prepend system prompt to the first user message (in history, or current)
+  if (systemPrompt) {
+    if (history.length > 0) {
+      const first = history[0];
+      if (first.userInputMessage) {
+        first.userInputMessage.content = systemPrompt + "\n\n" + first.userInputMessage.content;
+      }
+    } else {
+      finalCurrentText = systemPrompt + "\n\n" + finalCurrentText;
+    }
+  }
+
+  const userInputMessage = {
+    content: finalCurrentText,
+    modelId: model,
+    origin: ORIGIN,
+  };
+
+  const ctx = {};
+  if (tools && tools.length) ctx.tools = convertTools(tools);
+  if (currentToolResults && currentToolResults.length) ctx.toolResults = currentToolResults;
+  if (Object.keys(ctx).length) userInputMessage.userInputMessageContext = ctx;
+
+  const payload = {
+    conversationState: {
+      chatTriggerType: "MANUAL",
+      conversationId,
+      currentMessage: { userInputMessage },
+    },
+  };
+  if (history.length) payload.conversationState.history = history;
+  return payload;
+}
+
+/**
  * Main converter: Anthropic Messages request → Kiro generateAssistantResponse payload.
  *
  * Note: no profileArn is sent — API-key auth resolves the profile server-side and
@@ -101,131 +161,62 @@ function extractToolUses(content) {
  * @returns {object} Kiro API payload
  */
 export function anthropicToKiro(anthropicReq) {
-  const { model, messages, system, tools, max_tokens } = anthropicReq;
-
-  // Build system prompt
+  const { model, messages, system, tools } = anthropicReq;
   const systemPrompt = extractSystem(system);
 
-  // Separate messages into user/assistant sequence
-  // Kiro expects: history[] of alternating user/assistant, + current message
-  const unified = [];
-  for (const msg of messages) {
-    unified.push({
-      role: msg.role,
-      content: msg.content,
-    });
-  }
-
-  // Ensure first message is user
+  // Normalize roles
+  const unified = messages.map((m) => ({ role: m.role, content: m.content }));
   if (unified.length > 0 && unified[0].role !== "user") {
     unified.unshift({ role: "user", content: "(context)" });
   }
-
-  // Ensure alternating roles (merge or insert placeholders)
   const alternated = ensureAlternating(unified);
 
   // Split: history = all except last, current = last
   const historyMsgs = alternated.slice(0, -1);
   const currentMsg = alternated[alternated.length - 1] || { role: "user", content: "" };
 
-  // Build history array
+  // Build Kiro-format history entries (Anthropic content-block format)
   const history = [];
   for (const msg of historyMsgs) {
     if (msg.role === "user") {
       const text = extractText(msg.content) || "(empty placeholder)";
-      const userInput = {
-        content: text,
-        modelId: model,
-        origin: ORIGIN,
-      };
-      // Check for tool_results in content blocks
+      const entry = { content: text, modelId: model, origin: ORIGIN };
       if (Array.isArray(msg.content)) {
         const toolResults = convertToolResults(msg.content);
-        if (toolResults.length) {
-          userInput.userInputMessageContext = { toolResults };
-        }
+        if (toolResults.length) entry.userInputMessageContext = { toolResults };
       }
-      history.push({ userInputMessage: userInput });
+      history.push({ userInputMessage: entry });
     } else if (msg.role === "assistant") {
       const text = extractText(msg.content) || "(empty placeholder)";
-      const assistantResp = { content: text };
-      // Extract tool_uses from assistant content
+      const entry = { content: text };
       if (Array.isArray(msg.content)) {
         const toolUses = extractToolUses(msg.content);
-        if (toolUses.length) {
-          assistantResp.toolUses = toolUses;
-        }
+        if (toolUses.length) entry.toolUses = toolUses;
       }
-      history.push({ assistantResponseMessage: assistantResp });
+      history.push({ assistantResponseMessage: entry });
     }
   }
 
-  // Build current message (userInputMessage)
-  let currentContent = extractText(currentMsg.content) || "(empty placeholder)";
+  const currentText = extractText(currentMsg.content);
+  let currentToolResults = [];
+  if (Array.isArray(currentMsg.content)) currentToolResults = convertToolResults(currentMsg.content);
 
-  // Prepend system prompt
-  if (systemPrompt) {
-    if (history.length > 0) {
-      // Add system to first history message
-      const first = history[0];
-      if (first.userInputMessage) {
-        first.userInputMessage.content = systemPrompt + "\n\n" + first.userInputMessage.content;
-      }
-    } else {
-      // Add to current message
-      currentContent = systemPrompt + "\n\n" + currentContent;
-    }
-  }
-
-  const userInputMessage = {
-    content: currentContent,
-    modelId: model,
-    origin: ORIGIN,
-  };
-
-  // Tool context for current message
-  const userInputContext = {};
-
-  // Add tools
-  if (tools && tools.length) {
-    userInputContext.tools = convertTools(tools);
-  }
-
-  // Add tool_results from current message
-  if (Array.isArray(currentMsg.content)) {
-    const toolResults = convertToolResults(currentMsg.content);
-    if (toolResults.length) {
-      userInputContext.toolResults = toolResults;
-    }
-  }
-
-  if (Object.keys(userInputContext).length) {
-    userInputMessage.userInputMessageContext = userInputContext;
-  }
-
-  // Assemble payload
-  const payload = {
-    conversationState: {
-      chatTriggerType: "MANUAL",
-      conversationId: generateConversationId(messages),
-      currentMessage: {
-        userInputMessage,
-      },
-    },
-  };
-
-  if (history.length) {
-    payload.conversationState.history = history;
-  }
-
-  return payload;
+  return buildKiroConversation({
+    systemPrompt,
+    history,
+    currentText,
+    currentToolResults: currentToolResults.length ? currentToolResults : undefined,
+    tools,
+    model,
+    conversationId: generateConversationId(messages),
+  });
 }
 
 /**
  * Ensure alternating user/assistant messages.
  * Insert placeholders where needed.
  */
-function ensureAlternating(messages) {
+export function ensureAlternating(messages) {
   if (!messages.length) return messages;
   const result = [messages[0]];
   for (let i = 1; i < messages.length; i++) {

@@ -77,17 +77,15 @@ export function lookupModelForTool(tool, rawModel) {
   return { provider: null, model: rawModel };
 }
 
-// Execute a Kiro chat request: build the Kiro payload from an Anthropic-shaped
-// request, fetch the runtime host, apply Kiro-specific error mapping, record
-// usage. Returns { upstream, startTime } on success — the caller consumes
-// upstream.body via streamKiroToAnthropic (streaming) or collectKiroResponse
-// (collected) and performs the SUCCESS logRequest with the usage it extracts.
+// Execute a Kiro chat request: fetch the runtime host with a pre-built Kiro
+// payload, apply Kiro-specific error mapping, record usage. Returns { upstream,
+// startTime } on success — the caller consumes upstream.body via the appropriate
+// collector/streamer and performs the SUCCESS logRequest with the usage it extracts.
 //
 // `model` must already be the resolved Kiro catalog id (from lookupModelForTool).
-// `anthropicReq` is the Anthropic Messages-shaped body; its model field is
-// overridden with the resolved id.
-export async function executeKiro({ adapter, provider, tool, model, rawModel, anthropicReq }) {
-  const kiroPayload = anthropicToKiro({ ...anthropicReq, model });
+// `kiroPayload` is the wire-format request body (built by anthropicToKiro or
+// codexToKiro) — the executor no longer owns payload construction.
+export async function executeKiro({ adapter, provider, tool, model, rawModel, kiroPayload }) {
   const url = adapter.getRequestUrl(model, {});
   const headers = adapter.getRequestHeaders();
 
@@ -147,10 +145,10 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, an
 //
 // Each failed attempt is logged as an error entry by executeKiro, so every
 // Kiro account that was tried shows up in the log (spend clarity).
-export async function executeKiroWithFallback({ adapter: primaryAdapter, provider: primaryProvider, tool, model, rawModel, anthropicReq }) {
+export async function executeKiroWithFallback({ adapter: primaryAdapter, provider: primaryProvider, tool, model, rawModel, kiroPayload }) {
   let lastErr;
   try {
-    const r = await executeKiro({ adapter: primaryAdapter, provider: primaryProvider, tool, model, rawModel, anthropicReq });
+    const r = await executeKiro({ adapter: primaryAdapter, provider: primaryProvider, tool, model, rawModel, kiroPayload });
     return { ...r, provider: primaryProvider, adapter: primaryAdapter, fallback: false };
   } catch (err) {
     lastErr = err;
@@ -168,7 +166,7 @@ export async function executeKiroWithFallback({ adapter: primaryAdapter, provide
       continue;
     }
     try {
-      const r = await executeKiro({ adapter, provider: fp, tool, model, rawModel, anthropicReq });
+      const r = await executeKiro({ adapter, provider: fp, tool, model, rawModel, kiroPayload });
       return { ...r, provider: fp, adapter, fallback: true };
     } catch (err) {
       lastErr = err;

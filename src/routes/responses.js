@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
-import { collectKiroResponse } from "../kiro/stream.js";
+import { codexToKiro } from "../kiro/codexConverter.js";
+import { collectKiroAsCodex, streamKiroToCodex } from "../kiro/codexStream.js";
 import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
@@ -9,39 +10,6 @@ import { createAdapter } from "../registry.js";
 import { ApiError } from "../lib/errors.js";
 
 export const responsesRouter = Router();
-
-// Convert Anthropic Messages response to OpenAI chat/completions format
-// (needed to bridge Kiro response into Responses API format)
-function anthropicToChatResponse(anthropicResp, model) {
-  const content = anthropicResp.content || [];
-  const textParts = content.filter((b) => b.type === "text").map((b) => b.text).join("");
-  const toolUses = content.filter((b) => b.type === "tool_use");
-
-  const message = { role: "assistant", content: textParts || null };
-  if (toolUses.length) {
-    message.tool_calls = toolUses.map((tu) => ({
-      id: tu.id,
-      type: "function",
-      function: { name: tu.name, arguments: JSON.stringify(tu.input || {}) },
-    }));
-  }
-
-  let finishReason = "stop";
-  if (anthropicResp.stop_reason === "tool_use") finishReason = "tool_calls";
-  else if (anthropicResp.stop_reason === "max_tokens") finishReason = "length";
-
-  return {
-    id: anthropicResp.id || `chatcmpl-${randomUUID().slice(0, 8)}`,
-    object: "chat.completion",
-    model,
-    choices: [{ index: 0, message, finish_reason: finishReason }],
-    usage: {
-      prompt_tokens: anthropicResp.usage?.input_tokens || 0,
-      completion_tokens: anthropicResp.usage?.output_tokens || 0,
-      total_tokens: (anthropicResp.usage?.input_tokens || 0) + (anthropicResp.usage?.output_tokens || 0),
-    },
-  };
-}
 
 // Convert Responses API input to chat messages
 function inputToMessages(input, instructions) {
@@ -271,47 +239,35 @@ responsesRouter.post("/responses", async (req, res, next) => {
 
     const responseId = `resp_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
 
-    // --- Kiro provider: Responses input → Anthropic → Kiro, then back to Responses ---
+    // --- Kiro provider: Responses input → Kiro, then Kiro stream → Responses ---
     if (provider.type === "kiro") {
-      const messages = inputToMessages(req.body.input, req.body.instructions);
-      const anthropicTools = (req.body.tools || [])
-        .filter((t) => t.type === "function")
-        .map((t) => ({
-          name: t.name || "",
-          description: t.description || "",
-          input_schema: t.parameters || { type: "object", properties: {} },
-        }));
-
-      const anthropicReq = {
-        messages,
-        max_tokens: req.body.max_output_tokens || 16000,
-      };
-      if (anthropicTools.length) anthropicReq.tools = anthropicTools;
+      const kiroPayload = codexToKiro(req.body, model);
 
       const { upstream, startTime, provider: served, fallback } = await executeKiroWithFallback({
-        adapter, provider, tool: "codex", model, rawModel, anthropicReq,
+        adapter, provider, tool: "codex", model, rawModel, kiroPayload,
       });
 
-      // Collect Kiro response (Anthropic shape), then bridge to chat/completions
-      // and finally to Responses format. Streaming is generated from the
-      // collected response — Kiro's native stream is Anthropic-shaped, so we
-      // collect once and emit Responses SSE events from it.
-      const anthropicResp = await collectKiroResponse(upstream.body, model);
-      const chatResponse = anthropicToChatResponse(anthropicResp, model);
-      logRequest({
-        tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
-        latencyMs: Date.now() - startTime, status: "ok", fallback,
-        kiroCredits: anthropicResp._kiro?.credits,
-      });
-
+      // Kiro's stream is consumed directly into Responses format — no detour
+      // through Anthropic Messages shape.
       if (stream) {
         setSseHeaders(res);
-        for (const event of generateSSE(chatResponse, model, responseId)) res.write(event);
+        const kiroUsage = await streamKiroToCodex(upstream.body, res, model, responseId);
+        logRequest({
+          tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
+          latencyMs: Date.now() - startTime, status: "ok", fallback,
+          kiroCredits: kiroUsage.credits,
+        });
         res.end();
         return;
       }
 
-      res.json(chatToResponsesFormat(chatResponse, model, responseId));
+      const { response, credits } = await collectKiroAsCodex(upstream.body, model, responseId);
+      logRequest({
+        tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
+        latencyMs: Date.now() - startTime, status: "ok", fallback,
+        kiroCredits: credits,
+      });
+      res.json(response);
       return;
     }
 

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
+import { anthropicToKiro } from "../kiro/converter.js";
 import { streamKiroToAnthropic, collectKiroResponse } from "../kiro/stream.js";
 import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
 import { pipeAnthropicSse, anthropicUsage } from "../lib/anthropicSse.js";
@@ -39,8 +40,9 @@ anthropicRouter.post("/messages", async (req, res, next) => {
 
     // --- Kiro provider: translate Anthropic → Kiro protocol ---
     if (provider.type === "kiro") {
+      const kiroPayload = anthropicToKiro({ ...req.body, model });
       const { upstream, startTime, provider: served, fallback } = await executeKiroWithFallback({
-        adapter, provider, tool: "claude", model, rawModel, anthropicReq: req.body,
+        adapter, provider, tool: "claude", model, rawModel, kiroPayload,
       });
 
       if (stream) {
