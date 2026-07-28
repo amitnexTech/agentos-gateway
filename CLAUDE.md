@@ -35,6 +35,29 @@ and the sampling has to start over.
   editor that saves by unlink-and-recreate will break the link; re-make it with
   `ln -f ~/.config/agents-global.md .kiro/steering/global-rules.md`.
 
+## Auto-Fallback (2026-07-27)
+
+Opt-in (default OFF). When a tool's bound provider fails with a retriable upstream
+error (429/401/403/408/5xx/timeout), the same request retries on another enabled
+provider that speaks the **same protocol** — so the execution path (executeKiro vs
+anthropic SSE vs OpenAI chat SSE) is unchanged and the fallback speaks the right
+wire format.
+
+- **Toggle:** Dashboard Routing panel "Auto-fallback" checkbox, or
+  `POST /admin/routing/fallback {enabled:bool}`; `GET /admin/routing` returns
+  `fallbackEnabled`. Stored as `routing.fallbackEnabled` in keys.json.
+- **Chain** (`keysStore.fallbackProviders`): Kiro→Kiro (executeKiro path);
+  openai slot→openai-compat+local-openai (OpenAI chat SSE);
+  claude/codex passthrough→anthropic-compat (anthropic SSE). Protocol group follows
+  the execution path, not raw type equality.
+- **Kiro fallback is strict** — a candidate is only tried if it advertises the
+  resolved model (unconfigured id = ban risk). Passthrough fallback forwards the
+  raw id untouched (#171 item 3).
+- **Pre-stream only** — `callUpstream`/`executeKiro` throw before any byte is
+  streamed, so retry is clean; mid-stream failures are NOT recovered.
+- Each failed attempt is logged as an error entry; `logPage.js` shows a "fallback"
+  badge by the provider name. `logRequest` captures a `fallback` (bool) field.
+
 ## What This Is
 
 Unified AI API gateway — one `localhost:9000` for Claude Code, Codex, Kiro, any tool. Per-tool routing: each agent can use a different provider.
@@ -49,7 +72,7 @@ Unified AI API gateway — one `localhost:9000` for Claude Code, Codex, Kiro, an
 - ✅ Token tracking (input/output/cache_read/cache_write)
 - ✅ Cost estimation per request
 - ✅ Request log page with live auto-refresh
-- ✅ Enable/disable providers, edit, manual model add
+- ✅ Auto-fallback (opt-in, default OFF — same-protocol retry on retriable errors)
 - ✅ Dashboard with routing dropdowns, presets, inline test results
 
 ## Model Swap Detection (2026-07-26)
