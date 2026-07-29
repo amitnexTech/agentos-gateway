@@ -40,6 +40,19 @@ function toArgsString(inputStr) {
   }
 }
 
+// Unwrap a freeform ("custom") tool's arguments. The tool is advertised to Kiro with
+// FREEFORM_SCHEMA ({ input: string }), so the model answers with JSON; Codex wants the
+// raw string back. Falls back to the accumulated text if it is not that shape.
+function unwrapFreeform(inputStr) {
+  if (!inputStr) return "";
+  try {
+    const parsed = JSON.parse(inputStr);
+    if (typeof parsed === "string") return parsed;
+    if (parsed && typeof parsed.input === "string") return parsed.input;
+  } catch { /* partial or non-JSON — use as-is */ }
+  return inputStr;
+}
+
 // One SSE event line.
 function sse(eventType, data) {
   return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -51,10 +64,11 @@ function sse(eventType, data) {
  * @param {ReadableStream|AsyncIterable} body - Kiro response body
  * @param {string} model - resolved model id
  * @param {string} responseId - the resp_ id to attach
+ * @param {Set<string>} [freeform] - names of freeform ("custom") Codex tools
  * @returns {object} { response, credits, contextUsagePercent, outputTokens }
  *   where `response` is the Responses-format object.
  */
-export async function collectKiroAsCodex(body, model, responseId) {
+export async function collectKiroAsCodex(body, model, responseId, freeform = new Set()) {
   let buffer = "";
   let fullContent = "";
   const toolCalls = []; // { id, toolUseId, name, inputStr }
@@ -131,17 +145,26 @@ export async function collectKiroAsCodex(body, model, responseId) {
 
   outputTokens = Math.ceil(fullContent.length / 4);
 
-  // Build Responses output items: function_calls first, then the text message.
+  // Build Responses output items: tool calls first, then the text message.
   const output = [];
   for (const tc of unique) {
-    output.push({
-      type: "function_call",
-      id: tc.id,
-      call_id: tc.toolUseId,
-      name: tc.name,
-      arguments: toArgsString(tc.inputStr),
-      status: "completed",
-    });
+    output.push(freeform.has(tc.name)
+      ? {
+          type: "custom_tool_call",
+          id: tc.id,
+          call_id: tc.toolUseId,
+          name: tc.name,
+          input: unwrapFreeform(tc.inputStr),
+          status: "completed",
+        }
+      : {
+          type: "function_call",
+          id: tc.id,
+          call_id: tc.toolUseId,
+          name: tc.name,
+          arguments: toArgsString(tc.inputStr),
+          status: "completed",
+        });
   }
   if (fullContent) {
     output.push({
@@ -179,9 +202,11 @@ export async function collectKiroAsCodex(body, model, responseId) {
  * @param {object} res - Express response
  * @param {string} model - resolved model id
  * @param {string} responseId - the resp_ id
+ * @param {Set<string>} [freeform] - names of freeform ("custom") Codex tools; these are
+ *   emitted as `custom_tool_call` items with a raw string `input`
  * @returns {object} { credits, contextUsagePercent, outputTokens }
  */
-export async function streamKiroToCodex(body, res, model, responseId) {
+export async function streamKiroToCodex(body, res, model, responseId, freeform = new Set()) {
   let buffer = "";
   let kiroCredits = 0;
   let contextUsagePercent = 0;
@@ -221,6 +246,20 @@ export async function streamKiroToCodex(body, res, model, responseId) {
 
   const finalizeTool = () => {
     if (!currentTool) return;
+    if (currentTool.isFreeform) {
+      // Freeform tool: Codex wants a custom_tool_call item carrying raw text.
+      const raw = unwrapFreeform(currentTool.inputStr || "");
+      res.write(sse("response.custom_tool_call_input.delta", {
+        type: "response.custom_tool_call_input.delta", output_index: outputIdx, item_id: currentTool.itemId, delta: raw,
+      }));
+      res.write(sse("response.output_item.done", {
+        type: "response.output_item.done", output_index: outputIdx,
+        item: { type: "custom_tool_call", id: currentTool.itemId, call_id: currentTool.callId, name: currentTool.name, input: raw, status: "completed" },
+      }));
+      outputIdx++;
+      currentTool = null;
+      return;
+    }
     const args = toArgsString(currentTool.inputStr || "{}");
     if (!currentTool.argsStarted) {
       res.write(sse("response.function_call_arguments.delta", {
@@ -280,12 +319,14 @@ export async function streamKiroToCodex(body, res, model, responseId) {
         emittedToolIds.add(toolUseId);
 
         if (currentTool) finalizeTool();
+        const name = ev.data.name || "";
         currentTool = {
           itemId: `fc_${randomUUID().slice(0, 12)}`,
           callId: toolUseId,
-          name: ev.data.name || "",
+          name,
           inputStr: "",
           argsStarted: false,
+          isFreeform: freeform.has(name),
         };
         const inputData = ev.data.input;
         if (inputData) {
@@ -293,7 +334,9 @@ export async function streamKiroToCodex(body, res, model, responseId) {
         }
         res.write(sse("response.output_item.added", {
           type: "response.output_item.added", output_index: outputIdx,
-          item: { type: "function_call", id: currentTool.itemId, call_id: currentTool.callId, name: currentTool.name, arguments: "", status: "in_progress" },
+          item: currentTool.isFreeform
+            ? { type: "custom_tool_call", id: currentTool.itemId, call_id: currentTool.callId, name, input: "", status: "in_progress" }
+            : { type: "function_call", id: currentTool.itemId, call_id: currentTool.callId, name, arguments: "", status: "in_progress" },
         }));
         if (ev.data.stop) finalizeTool();
       } else if (ev.type === "tool_input") {
@@ -303,9 +346,13 @@ export async function streamKiroToCodex(body, res, model, responseId) {
           if (partial) {
             currentTool.inputStr += partial;
             currentTool.argsStarted = true;
-            res.write(sse("response.function_call_arguments.delta", {
-              type: "response.function_call_arguments.delta", output_index: outputIdx, item_id: currentTool.itemId, delta: partial,
-            }));
+            // Freeform tools stream nothing incrementally: the raw text can only be
+            // unwrapped once the JSON envelope is complete (finalizeTool does it).
+            if (!currentTool.isFreeform) {
+              res.write(sse("response.function_call_arguments.delta", {
+                type: "response.function_call_arguments.delta", output_index: outputIdx, item_id: currentTool.itemId, delta: partial,
+              }));
+            }
           }
         }
       } else if (ev.type === "tool_stop") {

@@ -5,8 +5,12 @@
 // through Anthropic Messages format. The Kiro payload assembly itself is shared
 // with the Anthropic path via buildKiroConversation (converter.js).
 //
-// Handles: instructions (system), message items, function_call (→ toolUses),
-// function_call_output (→ toolResults), and tools.
+// Handles: instructions (system), message items, function_call / custom_tool_call
+// (→ toolUses), function_call_output / custom_tool_call_output (→ toolResults),
+// and tools from BOTH wire shapes:
+//   - old:  top-level `tools: [...]`
+//   - new:  an `input` item `{type:"additional_tools", role:"developer", tools:[...]}`
+//           (Codex CLI >= ~0.14x sends tools this way and omits `instructions`)
 
 import { randomUUID } from "node:crypto";
 import { buildKiroConversation, ensureAlternating } from "./converter.js";
@@ -34,38 +38,90 @@ function parseArgs(argumentsStr) {
   }
 }
 
-// Build the Kiro-format toolUses for one or more function_call items in a single
-// assistant turn. toolUseId = call_id — this linkage is what lets Kiro match a
-// later toolResult to its call (the bug today: results were dropped entirely).
+// Build the Kiro-format toolUses for one or more function_call / custom_tool_call items
+// in a single assistant turn. toolUseId = call_id — this linkage is what lets Kiro match
+// a later toolResult to its call.
+// A custom_tool_call carries freeform text in `input`; it is re-wrapped as { input }
+// to match the schema the tool was advertised with (FREEFORM_SCHEMA).
 function functionCallsToToolUses(items) {
   return items.map((it) => ({
     name: it.name || "",
-    input: parseArgs(it.arguments),
+    input: it.type === "custom_tool_call" ? { input: it.input ?? "" } : parseArgs(it.arguments),
     toolUseId: it.call_id || "",
   }));
 }
 
-// Build the Kiro-format toolResults for one or more function_call_output items in a
-// single user turn. toolUseId = call_id links each result back to its call.
+// Build the Kiro-format toolResults for one or more function_call_output /
+// custom_tool_call_output items in a single user turn. toolUseId = call_id links each
+// result back to its call.
 function functionOutputsToToolResults(items) {
   return items.map((it) => ({
-    content: [{ text: typeof it.output === "string" ? it.output : JSON.stringify(it.output ?? "") || "(empty result)" }],
+    content: [{ text: outputToText(it.output) || "(empty result)" }],
     status: it.is_error ? "error" : "success",
     toolUseId: it.call_id || "",
   }));
 }
 
-// Convert Codex Responses-API tool definitions ({type:"function", name, description,
-// parameters}) to the Anthropic-shape buildKiroConversation expects.
-function codexToolsToAnthropic(tools) {
-  if (!tools || !tools.length) return undefined;
-  return tools
-    .filter((t) => t.type === "function")
-    .map((t) => ({
-      name: t.name || "",
-      description: t.description || "",
-      input_schema: t.parameters || { type: "object", properties: {} },
-    }));
+// Codex tool output is a string, or (newer CLIs) an object like
+// { content: [{type:"input_text", text}], success } — flatten either to text.
+function outputToText(output) {
+  if (output == null) return "";
+  if (typeof output === "string") return output;
+  if (Array.isArray(output.content)) return codexContentToText(output.content);
+  if (typeof output.output === "string") return output.output;
+  return JSON.stringify(output);
+}
+
+// A freeform ("custom") Codex tool takes raw text, not JSON. Kiro's toolSpecification
+// requires a JSON schema, so freeform tools are advertised as a single string field
+// and unwrapped again on the way back (see codexStream.js).
+const FREEFORM_SCHEMA = {
+  type: "object",
+  properties: { input: { type: "string", description: "The raw tool input, verbatim. Not JSON-wrapped." } },
+  required: ["input"],
+};
+
+/**
+ * Collect Codex tool definitions from a /v1/responses body, from both wire shapes,
+ * and convert them to the Anthropic shape buildKiroConversation expects.
+ *
+ * @param {object} reqBody - Codex /v1/responses body
+ * @returns {{tools: object[], freeform: Set<string>}} `freeform` names the tools that
+ *   must be answered with a `custom_tool_call` item instead of a `function_call`.
+ */
+export function collectCodexTools(reqBody) {
+  const tools = [];
+  const freeform = new Set();
+
+  const add = (t) => {
+    if (!t || typeof t !== "object" || !t.name) return;
+    const type = t.type || "function";
+    if (type === "function") {
+      tools.push({
+        name: t.name,
+        description: t.description || `Tool: ${t.name}`,
+        input_schema: t.parameters || { type: "object", properties: {} },
+      });
+    } else if (type === "custom") {
+      freeform.add(t.name);
+      tools.push({
+        name: t.name,
+        description: `${t.description || `Tool: ${t.name}`}\n\nCall this tool with a single JSON field "input" whose value is the raw tool input as a plain string.`,
+        input_schema: FREEFORM_SCHEMA,
+      });
+    }
+    // "namespace" (sub-agent orchestration) and built-ins like web_search /
+    // local_shell are skipped: Kiro has no equivalent, and Codex resolves a
+    // namespaced call by a dedicated item type we do not emit.
+  };
+
+  for (const t of reqBody?.tools || []) add(t);
+  if (Array.isArray(reqBody?.input)) {
+    for (const item of reqBody.input) {
+      if (item?.type === "additional_tools") for (const t of item.tools || []) add(t);
+    }
+  }
+  return { tools, freeform };
 }
 
 // Stable conversation id from the first input item (mirrors generateConversationId).
@@ -87,8 +143,9 @@ function codexConversationId(input) {
  * @returns {object} Kiro API payload
  */
 export function codexToKiro(reqBody, model) {
-  const { input, instructions, tools } = reqBody;
+  const { input, instructions } = reqBody;
   const systemPrompt = instructions || "";
+  const { tools } = collectCodexTools(reqBody);
 
   // Normalize Codex `input` (string | array of items) into alternating
   // user/assistant turns. Consecutive same-role items (e.g. several tool_result
@@ -123,27 +180,49 @@ export function codexToKiro(reqBody, model) {
       if (type === "message") {
         flushAssistant();
         flushUser();
-        rawTurns.push({ role: item.role || "user", text: codexContentToText(item.content), toolUses: [], toolResults: [] });
-      } else if (type === "function_call") {
+        // Kiro only knows user/assistant. Codex carries its system prompt, AGENTS.md
+        // and hook output as role "developer" — folding those into user turns keeps
+        // them in the conversation (dropping them left the model with no instructions
+        // and no knowledge of its tools).
+        const role = item.role === "assistant" ? "assistant" : "user";
+        rawTurns.push({ role, text: codexContentToText(item.content), toolUses: [], toolResults: [] });
+      } else if (type === "function_call" || type === "custom_tool_call") {
         flushUser();
         pendingAssistantCalls.push(item);
-      } else if (type === "function_call_output") {
+      } else if (type === "function_call_output" || type === "custom_tool_call_output") {
         flushAssistant();
         pendingUserOutputs.push(item);
       }
-      // reasoning / other types: ignored (no Kiro equivalent)
+      // additional_tools (handled by collectCodexTools), reasoning and other types:
+      // ignored (no Kiro equivalent)
     }
     flushAssistant();
     flushUser();
   }
 
+  // Codex sends its system prompt, AGENTS.md and hook output as a run of separate
+  // developer/user items. Merging same-role neighbours keeps them as one turn instead
+  // of forcing an "(empty placeholder)" assistant turn between each — fewer fake turns,
+  // fewer tokens.
+  const merged = [];
+  for (const turn of rawTurns) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === turn.role) {
+      prev.text = [prev.text, turn.text].filter(Boolean).join("\n\n");
+      prev.toolUses = [...(prev.toolUses || []), ...(turn.toolUses || [])];
+      prev.toolResults = [...(prev.toolResults || []), ...(turn.toolResults || [])];
+      continue;
+    }
+    merged.push({ ...turn });
+  }
+
   // Ensure first is user and roles alternate (Kiro requirement). ensureAlternating
   // inserts placeholders, which is fine — the builder reads .text from these turns.
   // ponytail: reuses the Anthropic path's alternation fixup verbatim.
-  if (rawTurns.length > 0 && rawTurns[0].role !== "user") {
-    rawTurns.unshift({ role: "user", text: "(context)", toolUses: [], toolResults: [] });
+  if (merged.length > 0 && merged[0].role !== "user") {
+    merged.unshift({ role: "user", text: "(context)", toolUses: [], toolResults: [] });
   }
-  const alternated = ensureAlternating(rawTurns);
+  const alternated = ensureAlternating(merged);
 
   // Split history/current
   const historyTurns = alternated.slice(0, -1);
@@ -172,7 +251,7 @@ export function codexToKiro(reqBody, model) {
     history,
     currentText: currentTurn.text,
     currentToolResults: currentTurn.toolResults?.length ? currentTurn.toolResults : undefined,
-    tools: codexToolsToAnthropic(tools),
+    tools: tools.length ? tools : undefined,
     model,
     conversationId: codexConversationId(input),
   });

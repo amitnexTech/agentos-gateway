@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
-import { codexToKiro } from "../kiro/codexConverter.js";
+import { codexToKiro, collectCodexTools } from "../kiro/codexConverter.js";
 import { collectKiroAsCodex, streamKiroToCodex } from "../kiro/codexStream.js";
 import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
 import { recordError } from "../config/usageStore.js";
@@ -32,9 +32,13 @@ function inputToMessages(input, instructions) {
       if (!item || typeof item !== "object") continue;
 
       const type = item.type || "";
-      const role = item.role || "user";
+      const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : "system";
 
-      if (type === "message") {
+      if (type === "additional_tools") {
+        continue; // tool definitions, not conversation (collectCodexTools reads these)
+      } else if (type === "reasoning") {
+        continue; // no chat/completions equivalent
+      } else if (type === "message") {
         let content = item.content;
         if (Array.isArray(content)) {
           content = content
@@ -43,21 +47,24 @@ function inputToMessages(input, instructions) {
             .join("\n");
         }
         messages.push({ role, content: content || "" });
-      } else if (type === "function_call") {
+      } else if (type === "function_call" || type === "custom_tool_call") {
         messages.push({
           role: "assistant",
           content: null,
           tool_calls: [{
             id: item.call_id || `call_${randomUUID().slice(0, 8)}`,
             type: "function",
-            function: { name: item.name || "", arguments: item.arguments || "{}" },
+            function: {
+              name: item.name || "",
+              arguments: type === "custom_tool_call" ? JSON.stringify({ input: item.input ?? "" }) : (item.arguments || "{}"),
+            },
           }],
         });
-      } else if (type === "function_call_output") {
+      } else if (type === "function_call_output" || type === "custom_tool_call_output") {
         messages.push({
           role: "tool",
           tool_call_id: item.call_id || "",
-          content: item.output || "",
+          content: typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? ""),
         });
       } else {
         // Generic fallback
@@ -71,7 +78,7 @@ function inputToMessages(input, instructions) {
 }
 
 // Convert chat response to Responses format
-function chatToResponsesFormat(chatResp, model, responseId) {
+function chatToResponsesFormat(chatResp, model, responseId, freeform = new Set()) {
   const output = [];
   const choice = chatResp.choices?.[0] || {};
   const message = choice.message || {};
@@ -79,14 +86,24 @@ function chatToResponsesFormat(chatResp, model, responseId) {
   // Tool calls
   if (message.tool_calls?.length) {
     for (const tc of message.tool_calls) {
-      output.push({
-        type: "function_call",
-        id: `fc_${randomUUID().slice(0, 12)}`,
-        call_id: tc.id || `call_${randomUUID().slice(0, 8)}`,
-        name: tc.function.name,
-        arguments: tc.function.arguments,
-        status: "completed",
-      });
+      const callId = tc.id || `call_${randomUUID().slice(0, 8)}`;
+      output.push(freeform.has(tc.function.name)
+        ? {
+            type: "custom_tool_call",
+            id: `fc_${randomUUID().slice(0, 12)}`,
+            call_id: callId,
+            name: tc.function.name,
+            input: unwrapFreeformArgs(tc.function.arguments),
+            status: "completed",
+          }
+        : {
+            type: "function_call",
+            id: `fc_${randomUUID().slice(0, 12)}`,
+            call_id: callId,
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+            status: "completed",
+          });
     }
   }
 
@@ -127,8 +144,19 @@ function chatToResponsesFormat(chatResp, model, responseId) {
   };
 }
 
+// A freeform ("custom") Codex tool is advertised to the upstream as a function taking
+// { input: string }; Codex wants the raw string back.
+function unwrapFreeformArgs(argumentsStr) {
+  try {
+    const parsed = JSON.parse(argumentsStr || "");
+    if (typeof parsed === "string") return parsed;
+    if (parsed && typeof parsed.input === "string") return parsed.input;
+  } catch { /* not JSON — pass through */ }
+  return argumentsStr || "";
+}
+
 // Generate SSE events for streaming
-function generateSSE(chatResp, model, responseId) {
+function generateSSE(chatResp, model, responseId, freeform = new Set()) {
   const events = [];
   const choice = chatResp.choices?.[0] || {};
   const message = choice.message || {};
@@ -140,6 +168,10 @@ function generateSSE(chatResp, model, responseId) {
     type: "response.created",
     response: { id: responseId, object: "response", status: "in_progress", model, output: [] },
   })}\n\n`);
+  events.push(`event: response.in_progress\ndata: ${JSON.stringify({
+    type: "response.in_progress",
+    response: { id: responseId, object: "response", status: "in_progress", model, output: [] },
+  })}\n\n`);
 
   let outputIdx = 0;
 
@@ -147,6 +179,24 @@ function generateSSE(chatResp, model, responseId) {
   for (const tc of toolCalls) {
     const itemId = `fc_${randomUUID().slice(0, 12)}`;
     const callId = tc.id || `call_${randomUUID().slice(0, 8)}`;
+
+    if (freeform.has(tc.function.name)) {
+      const raw = unwrapFreeformArgs(tc.function.arguments);
+      events.push(`event: response.output_item.added\ndata: ${JSON.stringify({
+        type: "response.output_item.added", output_index: outputIdx,
+        item: { type: "custom_tool_call", id: itemId, call_id: callId, name: tc.function.name, input: "", status: "in_progress" },
+      })}\n\n`);
+      events.push(`event: response.custom_tool_call_input.delta\ndata: ${JSON.stringify({
+        type: "response.custom_tool_call_input.delta", output_index: outputIdx, item_id: itemId, delta: raw,
+      })}\n\n`);
+      events.push(`event: response.output_item.done\ndata: ${JSON.stringify({
+        type: "response.output_item.done", output_index: outputIdx,
+        item: { type: "custom_tool_call", id: itemId, call_id: callId, name: tc.function.name, input: raw, status: "completed" },
+      })}\n\n`);
+      outputIdx++;
+      continue;
+    }
+
     const args = tc.function.arguments;
 
     events.push(`event: response.output_item.added\ndata: ${JSON.stringify({
@@ -242,6 +292,8 @@ responsesRouter.post("/responses", async (req, res, next) => {
     // --- Kiro provider: Responses input → Kiro, then Kiro stream → Responses ---
     if (provider.type === "kiro") {
       const kiroPayload = codexToKiro(req.body, model);
+      // Freeform ("custom") tools must be answered with custom_tool_call items.
+      const { freeform } = collectCodexTools(req.body);
 
       const { upstream, startTime, provider: served, fallback } = await executeKiroWithFallback({
         adapter, provider, tool: "codex", model, rawModel, kiroPayload,
@@ -251,7 +303,7 @@ responsesRouter.post("/responses", async (req, res, next) => {
       // through Anthropic Messages shape.
       if (stream) {
         setSseHeaders(res);
-        const kiroUsage = await streamKiroToCodex(upstream.body, res, model, responseId);
+        const kiroUsage = await streamKiroToCodex(upstream.body, res, model, responseId, freeform);
         logRequest({
           tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
           latencyMs: Date.now() - startTime, status: "ok", fallback,
@@ -261,7 +313,7 @@ responsesRouter.post("/responses", async (req, res, next) => {
         return;
       }
 
-      const { response, credits } = await collectKiroAsCodex(upstream.body, model, responseId);
+      const { response, credits } = await collectKiroAsCodex(upstream.body, model, responseId, freeform);
       logRequest({
         tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
         latencyMs: Date.now() - startTime, status: "ok", fallback,
@@ -273,12 +325,12 @@ responsesRouter.post("/responses", async (req, res, next) => {
 
     // --- Standard provider: Responses input → chat/completions, then to Responses ---
     const messages = inputToMessages(req.body.input, req.body.instructions);
-    const chatTools = (req.body.tools || [])
-      .filter((t) => t.type === "function")
-      .map((t) => ({
-        type: "function",
-        function: { name: t.name || "", description: t.description || "", parameters: t.parameters || { type: "object", properties: {} } },
-      }));
+    // Tools come either top-level or inside an `additional_tools` input item.
+    const { tools: codexTools, freeform } = collectCodexTools(req.body);
+    const chatTools = codexTools.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.input_schema },
+    }));
 
     const chatRequest = {
       model,
@@ -303,12 +355,12 @@ responsesRouter.post("/responses", async (req, res, next) => {
 
     if (stream) {
       setSseHeaders(res);
-      for (const event of generateSSE(chatResponse, model, responseId)) res.write(event);
+      for (const event of generateSSE(chatResponse, model, responseId, freeform)) res.write(event);
       res.end();
       return;
     }
 
-    res.json(chatToResponsesFormat(chatResponse, model, responseId));
+    res.json(chatToResponsesFormat(chatResponse, model, responseId, freeform));
   } catch (err) {
     if (model && !(err instanceof ApiError)) recordError(model);
     if (err.name === "AbortError") return next(new ApiError(504, "Upstream timeout"));
