@@ -31,8 +31,10 @@ src/
 │   └── responses.js       # /v1/responses (Codex) — protocol glue only
 ├── kiro/                  # Kiro provider: Anthropic-shaped requests over its own wire protocol
 │   ├── client.js          # Kiro execution + Kiro-only model-id alias resolution
-│   ├── converter.js       # Anthropic Messages → Kiro payload
+│   ├── converter.js       # Anthropic Messages → Kiro payload (shared payload builder)
+│   ├── codexConverter.js  # Codex Responses API → Kiro payload (direct, no Anthropic detour)
 │   ├── stream.js          # Kiro stream → Anthropic SSE converter
+│   ├── codexStream.js     # Kiro stream → Codex Responses items / SSE
 │   ├── api.js             # Kiro header construction + management-plane calls
 │   └── config.js          # Kiro hosts, regions, x-amz-target constants
 ├── config/
@@ -76,6 +78,25 @@ A `kiro` provider is reachable only via the `claude` (`/v1/messages`) and `codex
 rejects it. Model-id aliasing (dated Claude names → Kiro's short catalog names)
 is Kiro-only and lives in `kiro/client.js`; non-Kiro providers receive the raw
 model id the client sent, untouched.
+
+## Codex wire format (`/v1/responses`)
+
+Codex CLI ≥ 0.145 does **not** send `tools` or `instructions` at the top level:
+
+- tools arrive as an input item `{type:"additional_tools", role:"developer", tools:[…]}`
+- the system prompt, `AGENTS.md` and hook output arrive as `role:"developer"` message items
+- tool types include `custom` (freeform text input, e.g. `exec` — the code-mode tool that
+  reaches shell and every MCP tool), `function`, and `namespace` (sub-agent orchestration)
+
+`kiro/codexConverter.js` reads both wire shapes (`collectCodexTools`), folds
+developer/system turns into user turns and merges same-role neighbours. Freeform tools
+are advertised to Kiro as `{ input: string }` because Kiro's `toolSpecification` requires
+a JSON schema, then unwrapped on the way back into a `custom_tool_call` item with raw
+text. `namespace` tools are skipped — Codex resolves those through an item type the
+gateway does not emit, so sub-agent spawning is unavailable through the gateway.
+
+Reading tools from only the old shape is what left Codex able to chat but unable to call
+any tool at all (fixed 2026-07-29).
 
 ## Key Features
 
