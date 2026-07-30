@@ -136,6 +136,25 @@ npm start           # port 9000
 npm run dev         # with --watch
 ```
 
+## Verifying a Codex or Claude path change
+
+A hand-written curl proves nothing here: it matches the gateway's own assumptions, so it
+passes even when the real CLI is broken. This is how the "Codex has no tools" bug survived
+a *verified live* claim. Always verify with the real CLI, and always through a **multi-turn**
+tool round trip (call → output fed back → answer); turn 1 alone hides dropped tool history.
+
+To see what the CLI actually sends, put a transparent dump proxy in front of the gateway
+(listen on 9010, dump each body, forward to 127.0.0.1:9000) and point only the client at it
+for one run — no gateway restart, no config edits:
+
+```
+codex exec --skip-git-repo-check -c 'model_providers.kiro-codex.base_url="http://localhost:9010/v1"' "<prompt>"
+```
+
+Start such helpers with `setsid nohup … &`; a plain `&` from an agent tool call dies with the
+call. To confirm which SSE event names / item types a CLI accepts, read them out of its
+binary instead of guessing: `strings -n 10 <codex-binary> | grep -oE "response\.[a-z_.]+" | sort -u`.
+
 ## What NOT To Do
 
 - Do NOT add OAuth — unnecessary complexity
@@ -147,6 +166,8 @@ npm run dev         # with --watch
 ## Key Technical Constraints
 
 - Codex requires `/v1/responses` endpoint
+- Codex CLI ≥ 0.145 sends tools inside an `additional_tools` input item and no
+  `instructions` field — see the "Codex wire format" section in `AGENTS.md`
 - Claude Code uses `/v1/messages` (Anthropic format, streamed SSE)
 - Model alias in `routes/anthropic.js`: dated names → short names
 - Secrets in `data/.env`, config in `data/keys.json` (both gitignored)
