@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
 import { anthropicToKiro } from "../kiro/converter.js";
+import { measureKiroPayload } from "../kiro/tokens.js";
 import { streamKiroToAnthropic, collectKiroResponse } from "../kiro/stream.js";
 import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
 import { pipeAnthropicSse, anthropicUsage } from "../lib/anthropicSse.js";
@@ -41,28 +42,35 @@ anthropicRouter.post("/messages", async (req, res, next) => {
     // --- Kiro provider: translate Anthropic → Kiro protocol ---
     if (provider.type === "kiro") {
       const kiroPayload = anthropicToKiro({ ...req.body, model });
+      // Kiro reports no input token count, but input IS the cost there (full
+      // history is re-sent every turn). Measure what we send so the log shows it.
+      const { inputTokens, historyEntries, payloadChars } = measureKiroPayload(kiroPayload);
       const { upstream, startTime, provider: served, fallback } = await executeKiroWithFallback({
         adapter, provider, tool: "claude", model, rawModel, kiroPayload,
       });
 
       if (stream) {
         setSseHeaders(res);
-        const kiroUsage = await streamKiroToAnthropic(upstream.body, res, model);
+        const kiroUsage = await streamKiroToAnthropic(upstream.body, res, model, inputTokens);
         logRequest({
           tool: "claude", rawModel, model, providerId: served.id, providerName: served.name,
           latencyMs: Date.now() - startTime, status: "ok", responseModel: model,
           kiroCredits: kiroUsage.credits, fallback,
-          usage: { input_tokens: 0, output_tokens: kiroUsage.outputTokens },
+          contextUsagePercent: kiroUsage.contextUsagePercent,
+          historyEntries, payloadChars,
+          usage: { input_tokens: inputTokens, output_tokens: kiroUsage.outputTokens },
         });
         res.end();
         return;
       }
 
-      const responseJson = await collectKiroResponse(upstream.body, model);
+      const responseJson = await collectKiroResponse(upstream.body, model, inputTokens);
       logRequest({
         tool: "claude", rawModel, model, providerId: served.id, providerName: served.name,
         latencyMs: Date.now() - startTime, status: "ok", responseModel: model,
         kiroCredits: responseJson._kiro?.credits, fallback,
+        contextUsagePercent: responseJson._kiro?.contextUsagePercent,
+        historyEntries, payloadChars,
         usage: responseJson.usage || null,
       });
       delete responseJson._kiro; // internal field, not part of the Anthropic spec

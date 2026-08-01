@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
 import { codexToKiro, collectCodexTools } from "../kiro/codexConverter.js";
 import { collectKiroAsCodex, streamKiroToCodex } from "../kiro/codexStream.js";
+import { measureKiroPayload } from "../kiro/tokens.js";
 import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
@@ -292,6 +293,9 @@ responsesRouter.post("/responses", async (req, res, next) => {
     // --- Kiro provider: Responses input → Kiro, then Kiro stream → Responses ---
     if (provider.type === "kiro") {
       const kiroPayload = codexToKiro(req.body, model);
+      // Kiro reports no input token count, but input IS the cost there (full
+      // history is re-sent every turn). Measure what we send so the log shows it.
+      const { inputTokens, historyEntries, payloadChars } = measureKiroPayload(kiroPayload);
       // Freeform ("custom") tools must be answered with custom_tool_call items.
       const { freeform } = collectCodexTools(req.body);
 
@@ -308,16 +312,27 @@ responsesRouter.post("/responses", async (req, res, next) => {
           tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
           latencyMs: Date.now() - startTime, status: "ok", fallback,
           kiroCredits: kiroUsage.credits,
+          contextUsagePercent: kiroUsage.contextUsagePercent,
+          historyEntries, payloadChars,
+          usage: { input_tokens: inputTokens, output_tokens: kiroUsage.outputTokens },
         });
         res.end();
         return;
       }
 
-      const { response, credits } = await collectKiroAsCodex(upstream.body, model, responseId, freeform);
+      const { response, credits, contextUsagePercent, outputTokens } = await collectKiroAsCodex(upstream.body, model, responseId, freeform);
+      response.usage = {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens,
+      };
       logRequest({
         tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
         latencyMs: Date.now() - startTime, status: "ok", fallback,
         kiroCredits: credits,
+        contextUsagePercent,
+        historyEntries, payloadChars,
+        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
       });
       res.json(response);
       return;

@@ -37,6 +37,11 @@ export function renderLogPage() {
     .error-cell { color:var(--bad); font-size:12px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .badge.error { background:#f7e9e7; color:var(--bad); font-weight:600; }
     .mismatch-row { background:#fff5f5; }
+    .ctx-bar { width:54px; height:5px; border-radius:3px; background:var(--line); overflow:hidden; margin-bottom:2px; }
+    .ctx-fill { height:100%; border-radius:3px; }
+    .ctx-low { background:var(--accent); color:var(--accent); }
+    .ctx-mid { background:var(--warn); color:var(--warn); }
+    .ctx-high { background:var(--bad); color:var(--bad); }
     .empty { color:var(--muted); padding:40px; text-align:center; font-size:14px; }
     .table-wrap { overflow-x:auto; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
   </style>
@@ -68,7 +73,7 @@ export function renderLogPage() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th>Tokens (in/out/cache)</th><th>Cost</th><th>Kiro Cr</th><th>Latency</th><th title="Output tokens per second — the speed fingerprint of the model that actually ran">tok/s</th><th>Status</th><th>Error</th></tr>
+          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th>Tokens (in/out/cache)</th><th title="How full the model's context window is. On Kiro this is the provider's own reported percentage; the history entry count is what the gateway re-sent this turn.">Context</th><th>Cost</th><th>Kiro Cr</th><th>Latency</th><th title="Output tokens per second — the speed fingerprint of the model that actually ran">tok/s</th><th>Status</th><th>Error</th></tr>
         </thead>
         <tbody id="logBody"></tbody>
       </table>
@@ -91,6 +96,30 @@ export function renderLogPage() {
       return "very-slow";
     }
 
+    // Context-window fill. Kiro's own contextUsagePercent is the authoritative
+    // number; the history entry count below it shows how many prior turns were
+    // re-sent (and therefore re-billed) on this request.
+    function contextCell(l) {
+      const pct = l.contextUsagePercent;
+      const hist = l.historyEntries;
+      if (pct == null && hist == null) return '<span style="color:var(--muted)">—</span>';
+
+      let out = "";
+      if (pct != null) {
+        const cls = pct >= 80 ? "ctx-high" : pct >= 50 ? "ctx-mid" : "ctx-low";
+        out += '<div class="ctx-bar" title="' + pct.toFixed(1) + '% of the context window is full">' +
+                 '<div class="ctx-fill ' + cls + '" style="width:' + Math.min(pct, 100).toFixed(1) + '%"></div>' +
+               '</div>' +
+               '<span class="mono ' + cls + '" style="font-size:11px">' + pct.toFixed(1) + '%</span>';
+      }
+      if (hist != null) {
+        const kb = l.payloadChars != null ? " · " + Math.round(l.payloadChars / 1024) + "KB" : "";
+        out += '<div class="mono" style="color:var(--muted);font-size:11px" title="Prior turns re-sent to the provider this request — Kiro keeps no server-side state, so all of it is billed again">' +
+                 hist + ' turns' + kb + '</div>';
+      }
+      return out;
+    }
+
     function formatLatency(ms) {
       if (ms < 1000) return ms + "ms";
       return (ms / 1000).toFixed(1) + "s";
@@ -110,7 +139,7 @@ export function renderLogPage() {
         el("creditsPill").textContent = totalCredits.toFixed(4) + " cr (Kiro)";
         el("tokenPill").textContent = totalTokens.toLocaleString() + " tokens";
         if (!logs.length) {
-          el("logBody").innerHTML = '<tr><td colspan="11"><div class="empty">No requests logged yet. Use Claude Code, Codex, or any tool to generate traffic.</div></td></tr>';
+          el("logBody").innerHTML = '<tr><td colspan="12"><div class="empty">No requests logged yet. Use Claude Code, Codex, or any tool to generate traffic.</div></td></tr>';
           return;
         }
         el("logBody").innerHTML = logs.map(l => {
@@ -133,6 +162,7 @@ export function renderLogPage() {
             '<td>'+modelCell+'</td>' +
             '<td>'+escapeHtml(l.providerName)+(l.fallback?' <span class="badge" style="background:#fef3e2;color:#92400e" title="Served by a fallback provider after the primary failed">fallback</span>':'')+'</td>' +
             '<td>'+tokenCell+'</td>' +
+            '<td>'+contextCell(l)+'</td>' +
             '<td>'+costCell+'</td>' +
             '<td>'+creditsCell+'</td>' +
             '<td><span class="latency '+latencyClass(l.latencyMs)+'">'+formatLatency(l.latencyMs)+'</span></td>' +
@@ -142,7 +172,7 @@ export function renderLogPage() {
           '</tr>';
         }).join("");
       } catch(e) {
-        el("logBody").innerHTML = '<tr><td colspan="11"><div class="empty">Failed to load logs: '+escapeHtml(e.message)+'</div></td></tr>';
+        el("logBody").innerHTML = '<tr><td colspan="12"><div class="empty">Failed to load logs: '+escapeHtml(e.message)+'</div></td></tr>';
       }
     }
 

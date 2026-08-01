@@ -164,6 +164,10 @@ export async function streamKiroToAnthropic(body, res, model, inputTokens = 0) {
       type: "content_block_stop",
       index: contentBlockIndex,
     }));
+    // Tool-call JSON is billed output too. Counting only text deltas made
+    // tool-only turns report output_tokens: 0 — 30% of a measured session's
+    // credit spend looked free. Count the name plus the input JSON.
+    outputTokens += Math.ceil((currentToolCall.name.length + (currentToolCall.inputStr || "").length) / 4);
     toolCalls.push(currentToolCall);
     currentToolCall = null;
     contentBlockIndex++;
@@ -325,7 +329,6 @@ export async function streamKiroToAnthropic(body, res, model, inputTokens = 0) {
 
   return { credits: kiroCredits, contextUsagePercent, outputTokens };
 }
-
 /**
  * Collect full Kiro response (non-streaming) and build Anthropic Messages response.
  *
@@ -431,7 +434,11 @@ export async function collectKiroResponse(body, model, inputTokens = 0) {
   }
   const uniqueToolCalls = [...byId.values()];
 
-  outputTokens = Math.ceil(fullContent.length / 4);
+  // Text plus tool-call JSON — both are billed output.
+  outputTokens = Math.ceil(
+    (fullContent.length +
+      uniqueToolCalls.reduce((n, tc) => n + tc.name.length + (tc.inputStr || "").length, 0)) / 4
+  );
 
   // Build Anthropic response
   const content = [];

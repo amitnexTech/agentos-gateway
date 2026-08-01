@@ -143,7 +143,11 @@ export async function collectKiroAsCodex(body, model, responseId, freeform = new
   }
   const unique = [...byId.values()];
 
-  outputTokens = Math.ceil(fullContent.length / 4);
+  // Text plus tool-call JSON — both are billed output.
+  outputTokens = Math.ceil(
+    (fullContent.length +
+      unique.reduce((n, tc) => n + tc.name.length + (tc.inputStr || "").length, 0)) / 4
+  );
 
   // Build Responses output items: tool calls first, then the text message.
   const output = [];
@@ -246,6 +250,9 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
 
   const finalizeTool = () => {
     if (!currentTool) return;
+    // Tool-call JSON is billed output; counting only text deltas made tool-only
+    // turns report output_tokens: 0. Same fix as stream.js.
+    outputTokens += Math.ceil((currentTool.name.length + (currentTool.inputStr || "").length) / 4);
     if (currentTool.isFreeform) {
       // Freeform tool: Codex wants a custom_tool_call item carrying raw text.
       const raw = unwrapFreeform(currentTool.inputStr || "");

@@ -61,11 +61,16 @@ function normalizeModel(m) {
     .trim();
 }
 
-export function logRequest({ tool, rawModel, model, providerId, providerName, latencyMs, status, error, responseModel, responseId, usage, kiroCredits, fallback }) {
+export function logRequest({ tool, rawModel, model, providerId, providerName, latencyMs, status, error, responseModel, responseId, usage, kiroCredits, fallback, contextUsagePercent, historyEntries, payloadChars }) {
   // Approximate cost calculation (per million tokens)
   // Claude Sonnet: $3/M input, $15/M output, cache read 90% off
   // Claude Opus: $15/M input, $75/M output
   // Others: estimate $2/M input, $10/M output
+  //
+  // On the Kiro path this is an ANALOGY, not a bill: Kiro charges credits, and
+  // `kiroCredits` is the real figure. The $ number is still worth showing there
+  // because it prices the input side at Anthropic list rates, which is what makes
+  // the full-history-per-turn cost legible. Read the credits column for spend.
   let cost = null;
   if (usage) {
     const isOpus = (model || "").includes("opus");
@@ -111,6 +116,14 @@ export function logRequest({ tool, rawModel, model, providerId, providerName, la
     usage: usage || null,
     cost,
     kiroCredits: kiroCredits != null ? Math.round(kiroCredits * 1000000) / 1000000 : null,
+    // Kiro-only context signals. contextUsagePercent is Kiro's own number — the
+    // exact answer to "how full is the context window". historyEntries/payloadChars
+    // are ours, measured from the payload we sent, and work even when Kiro omits
+    // the percentage. Input growth across a conversation is the main cost driver
+    // on Kiro, so these are what make the burn visible.
+    contextUsagePercent: contextUsagePercent != null ? Math.round(contextUsagePercent * 10) / 10 : null,
+    historyEntries: historyEntries != null ? historyEntries : null,
+    payloadChars: payloadChars != null ? payloadChars : null,
     fallback: Boolean(fallback),
   };
   logs.unshift(entry);
