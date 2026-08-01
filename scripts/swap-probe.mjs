@@ -71,6 +71,9 @@ async function probe(provider, model) {
 
   const u = body.usage || {};
   const out = u.output_tokens || 0;
+  // Input tokens matter as much as output: a reseller that bills per token can
+  // inflate the prompt side, where nothing in the reply reveals it.
+  const inp = u.input_tokens ?? null;
   const interesting = Object.fromEntries(
     [...res.headers.entries()].filter(([k]) =>
       /request-id|ratelimit|anthropic|openai|x-(upstream|provider|model|served)/i.test(k),
@@ -85,6 +88,7 @@ async function probe(provider, model) {
     idShape: /^msg_[A-Za-z0-9]{20,}$/.test(body.id || "") ? "anthropic-like" : "SYNTHETIC",
     ms,
     out,
+    inp,
     tps: out ? Math.round((out / (ms / 1000)) * 10) / 10 : null,
     stop: body.stop_reason || null,
     cacheFields:
@@ -120,7 +124,8 @@ for (const m of list) {
   }
   console.log(
     `${m.padEnd(18)} ${String(r.tps ?? "-").padStart(6)} tok/s  ` +
-      `${String(r.ms).padStart(6)}ms  out=${String(r.out).padStart(4)}  ` +
+      `${String(r.ms).padStart(6)}ms  in=${String(r.inp ?? "-").padStart(6)}  ` +
+      `out=${String(r.out).padStart(4)}  ` +
       `${r.swapFlag.padEnd(14)} id=${r.idShape.padEnd(14)} cache=${r.cacheFields}`,
   );
   if (r.echoed !== m) console.log(`${"".padEnd(18)} echoed: ${r.echoed}`);

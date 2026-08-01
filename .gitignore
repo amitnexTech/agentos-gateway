@@ -12,3 +12,7 @@ dist/
 
 # graphify knowledge graph — regenerable (run /graphify or `graphify --update`)
 graphify-out/
+
+# vendor-facing report — quotes provider ids/usage from a specific account's
+# traffic, not something to publish with the code
+lumosel-token-report.md
