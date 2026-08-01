@@ -208,9 +208,10 @@ export async function collectKiroAsCodex(body, model, responseId, freeform = new
  * @param {string} responseId - the resp_ id
  * @param {Set<string>} [freeform] - names of freeform ("custom") Codex tools; these are
  *   emitted as `custom_tool_call` items with a raw string `input`
+ * @param {number} [inputTokens] - measured prompt size, reported in the final usage
  * @returns {object} { credits, contextUsagePercent, outputTokens }
  */
-export async function streamKiroToCodex(body, res, model, responseId, freeform = new Set()) {
+export async function streamKiroToCodex(body, res, model, responseId, freeform = new Set(), inputTokens = 0) {
   let buffer = "";
   let kiroCredits = 0;
   let contextUsagePercent = 0;
@@ -218,6 +219,13 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
 
   let outputIdx = 0;
   let textItemOpen = false;
+  // Accumulated text of the open message item, plus its id: the terminal
+  // *.done events must repeat both (Codex reads the answer from the item, not
+  // from the deltas) and the id has to match the output_item.added that opened it.
+  let textItemText = "";
+  let textItemId = null;
+  // Completed items, repeated in response.completed's `output`.
+  const completedItems = [];
   let currentTool = null; // { itemId, callId, name, inputStr, argsStarted }
   const emittedToolIds = new Set(); // Kiro's trailing tool_start repeat → skip
 
@@ -233,19 +241,28 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
 
   const closeTextItem = () => {
     if (!textItemOpen) return;
+    // The terminal events must carry the full accumulated text. Sending text:""
+    // here made Codex print an empty final answer: it streams the deltas for
+    // display but takes the message item's content from output_item.done, so a
+    // blank one discards the whole reply (and drops it from the next turn's
+    // history).
+    const text = textItemText;
+    const item = { type: "message", id: textItemId, role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
     res.write(sse("response.output_text.done", {
-      type: "response.output_text.done", output_index: outputIdx, content_index: 0, text: "",
+      type: "response.output_text.done", output_index: outputIdx, content_index: 0, text,
     }));
     res.write(sse("response.content_part.done", {
       type: "response.content_part.done", output_index: outputIdx, content_index: 0,
-      part: { type: "output_text", text: "", annotations: [] },
+      part: { type: "output_text", text, annotations: [] },
     }));
     res.write(sse("response.output_item.done", {
-      type: "response.output_item.done", output_index: outputIdx,
-      item: { type: "message", id: `msg_${randomUUID().slice(0, 12)}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: "", annotations: [] }] },
+      type: "response.output_item.done", output_index: outputIdx, item,
     }));
+    completedItems.push(item);
     outputIdx++;
     textItemOpen = false;
+    textItemText = "";
+    textItemId = null;
   };
 
   const finalizeTool = () => {
@@ -256,13 +273,14 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
     if (currentTool.isFreeform) {
       // Freeform tool: Codex wants a custom_tool_call item carrying raw text.
       const raw = unwrapFreeform(currentTool.inputStr || "");
+      const item = { type: "custom_tool_call", id: currentTool.itemId, call_id: currentTool.callId, name: currentTool.name, input: raw, status: "completed" };
       res.write(sse("response.custom_tool_call_input.delta", {
         type: "response.custom_tool_call_input.delta", output_index: outputIdx, item_id: currentTool.itemId, delta: raw,
       }));
       res.write(sse("response.output_item.done", {
-        type: "response.output_item.done", output_index: outputIdx,
-        item: { type: "custom_tool_call", id: currentTool.itemId, call_id: currentTool.callId, name: currentTool.name, input: raw, status: "completed" },
+        type: "response.output_item.done", output_index: outputIdx, item,
       }));
+      completedItems.push(item);
       outputIdx++;
       currentTool = null;
       return;
@@ -273,13 +291,14 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
         type: "response.function_call_arguments.delta", output_index: outputIdx, item_id: currentTool.itemId, delta: args,
       }));
     }
+    const item = { type: "function_call", id: currentTool.itemId, call_id: currentTool.callId, name: currentTool.name, arguments: args, status: "completed" };
     res.write(sse("response.function_call_arguments.done", {
       type: "response.function_call_arguments.done", output_index: outputIdx, item_id: currentTool.itemId, arguments: args,
     }));
     res.write(sse("response.output_item.done", {
-      type: "response.output_item.done", output_index: outputIdx,
-      item: { type: "function_call", id: currentTool.itemId, call_id: currentTool.callId, name: currentTool.name, arguments: args, status: "completed" },
+      type: "response.output_item.done", output_index: outputIdx, item,
     }));
+    completedItems.push(item);
     outputIdx++;
     currentTool = null;
   };
@@ -294,9 +313,10 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
     for (const ev of events) {
       if (ev.type === "content") {
         if (!textItemOpen) {
+          textItemId = `msg_${randomUUID().slice(0, 12)}`;
           res.write(sse("response.output_item.added", {
             type: "response.output_item.added", output_index: outputIdx,
-            item: { type: "message", id: `msg_${randomUUID().slice(0, 12)}`, role: "assistant", status: "in_progress", content: [] },
+            item: { type: "message", id: textItemId, role: "assistant", status: "in_progress", content: [] },
           }));
           res.write(sse("response.content_part.added", {
             type: "response.content_part.added", output_index: outputIdx, content_index: 0,
@@ -304,6 +324,7 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
           }));
           textItemOpen = true;
         }
+        textItemText += ev.data;
         res.write(sse("response.output_text.delta", {
           type: "response.output_text.delta", output_index: outputIdx, content_index: 0, delta: ev.data,
         }));
@@ -377,11 +398,15 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
   if (currentTool) finalizeTool();
 
   // response.completed with the terminal status. (Responses API has no [DONE].)
+  // `output` repeats the completed items and `input_tokens` carries the measured
+  // prompt size — an empty output here left clients that read the final snapshot
+  // (rather than accumulating the item events) with no answer at all.
   res.write(sse("response.completed", {
     type: "response.completed",
     response: {
-      id: responseId, object: "response", status: "completed", model, output: [],
-      usage: { input_tokens: 0, output_tokens: outputTokens, total_tokens: outputTokens },
+      id: responseId, object: "response", status: "completed", model,
+      output: completedItems,
+      usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens },
     },
   }));
 

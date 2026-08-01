@@ -307,7 +307,7 @@ responsesRouter.post("/responses", async (req, res, next) => {
       // through Anthropic Messages shape.
       if (stream) {
         setSseHeaders(res);
-        const kiroUsage = await streamKiroToCodex(upstream.body, res, model, responseId, freeform);
+        const kiroUsage = await streamKiroToCodex(upstream.body, res, model, responseId, freeform, inputTokens);
         logRequest({
           tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
           latencyMs: Date.now() - startTime, status: "ok", fallback,
