@@ -205,6 +205,18 @@ Start such helpers with `setsid nohup … &`; a plain `&` from an agent tool cal
 call. To confirm which SSE event names / item types a CLI accepts, read them out of its
 binary instead of guessing: `strings -n 10 <codex-binary> | grep -oE "response\.[a-z_.]+" | sort -u`.
 
+Two traps when driving `codex exec` from a tool call: it reads stdin and will **hang**
+waiting for it, so redirect `< /dev/null`; and a `stream disconnected / Reconnecting 1-5`
+error usually means the gateway process died or was mid-restart, not that the SSE format is
+wrong — check the process is alive before debugging the wire format.
+
+This is not hypothetical. On 2026-08-01 a curl test passed while every real Codex reply
+printed blank: `streamKiroToCodex` streamed the text deltas correctly but sent the terminal
+`*.done` events with `text: ""` and `response.completed` with `output: []`. Codex takes the
+message content from the completed item, not the deltas, so the answer was discarded (and
+dropped from the next turn's history). curl concatenates whatever arrives, so it saw nothing
+wrong. Fixed in `90eeccf`.
+
 ## What NOT To Do
 
 - Do NOT add OAuth — unnecessary complexity
