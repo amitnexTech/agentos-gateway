@@ -1,5 +1,21 @@
+import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { createApp } from "./app.js";
 import { adminToken } from "./lib/adminAuth.js";
+
+// Node's Happy Eyeballs gives each candidate address only 250ms to complete its
+// TCP handshake before racing the next one. Every AWS address behind
+// runtime.us-east-1.kiro.dev needs ~310-400ms from here, so NO address ever wins
+// inside the budget: Node walks the whole list and rejects with an
+// AggregateError [ETIMEDOUT] after ~765ms — which reads as "connection timed
+// out" even though the host is perfectly reachable. That is the cause of the
+// repeated Kiro API errors, and it also inflated healthy requests to 2.5-3.8s
+// (measured; 320-700ms after this change).
+//
+// This is a client-side default that is simply too tight for a ~300ms RTT to
+// us-east-1, not a provider fault. Raising it to 2s keeps the dual-stack
+// fallback behaviour while giving a real handshake room to finish.
+const CONNECT_ATTEMPT_TIMEOUT_MS = Number(process.env.AGENTOS_CONNECT_ATTEMPT_TIMEOUT_MS || 2000);
+setDefaultAutoSelectFamilyAttemptTimeout(CONNECT_ATTEMPT_TIMEOUT_MS);
 
 const PORT = process.env.PORT || 9000;
 // Loopback by default: the proxy spends real credits and the dashboard holds

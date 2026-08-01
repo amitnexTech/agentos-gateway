@@ -9,6 +9,7 @@ import { logRequest } from "../config/logStore.js";
 import { isFallbackEnabled, fallbackProviders } from "../config/keysStore.js";
 import { ApiError } from "./errors.js";
 import { upstreamErrorMessage } from "./upstreamError.js";
+import { networkErrorToApiError } from "./netError.js";
 import { isRetryableApiError } from "./fallback.js";
 import { MissingSecretError, UnknownProviderTypeError, createAdapter } from "../registry.js";
 
@@ -71,7 +72,21 @@ export async function callUpstream({
   } catch (err) {
     clearTimeout(timeout);
     if (err.name === "AbortError") throw new ApiError(504, "Upstream timeout");
-    throw err;
+    // A connect-level failure ("fetch failed" + ENOTFOUND/ETIMEDOUT/…) is a
+    // provider outage, not a gateway bug. Map it so it gets a readable message,
+    // lands in the request log, and can trigger auto-fallback.
+    const mapped = networkErrorToApiError(err, provider?.name || url);
+    if (mapped !== err) {
+      recordError(model);
+      logRequest({
+        tool, rawModel, model,
+        providerId: provider.id, providerName: provider.name,
+        latencyMs: Date.now() - startTime,
+        status: "error",
+        error: mapped.message,
+      });
+    }
+    throw mapped;
   }
   clearTimeout(timeout);
 

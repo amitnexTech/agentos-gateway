@@ -70,6 +70,8 @@ Unified AI API gateway — one `localhost:9000` for Claude Code, Codex, Kiro, an
 - ✅ Auto /v1 detection in base URLs
 - ✅ Model verification (see "Model swap detection" below)
 - ✅ Token tracking (input/output/cache_read/cache_write)
+- ✅ Kiro context-window % + re-sent history size per request (see "Kiro Cost &
+  Context Visibility")
 - ✅ Cost estimation per request
 - ✅ Request log page with live auto-refresh
 - ✅ Auto-fallback (opt-in, default OFF — same-protocol retry on retriable errors)
@@ -98,10 +100,58 @@ The anthropic-compat path captures `rawModel` (in `src/routes/anthropic.js`) plu
 (line-buffered SSE sniff), non-streaming inline. `src/routes/logPage.js` shows a
 `tok/s` column and the id under the model cell.
 
-Known gap: the `kiro` provider path under-reports `output_tokens` (13 reported for
-a ~50-token reply), so `tps` and `cost` are both understated there. Anthropic-compat
-providers are unaffected — their usage comes straight from upstream. Fix would be in
-`src/kiro/stream.js`.
+Known gap: the `kiro` provider path estimates tokens at ~4 chars/token rather than
+counting them (Kiro reports no token counts at all), so `tps` and `cost` are
+approximations there. Anthropic-compat providers are unaffected — their usage comes
+straight from upstream.
+
+## Kiro Cost & Context Visibility (2026-08-01)
+
+Input is the cost on Kiro. The protocol keeps no server-side conversation state, so
+`buildKiroConversation` re-sends the full history every turn and Kiro bills the whole
+payload again. Measured on a real 51-minute session: **~83 credits/hour**, and a
+fixed-shape 5-output-token request climbed 0.116 → 0.321 cr as history grew, then
+reset when a new conversation started.
+
+The Kiro routes used to log `input_tokens: 0`, which hid exactly that. Now:
+
+- `src/kiro/tokens.js` — `measureKiroPayload()` measures the outgoing payload
+  (`inputTokens` ~4 chars/token, `historyEntries`, `payloadChars`). Rough by design:
+  it shows growth and scale, not a bill.
+- `contextUsagePercent` — Kiro's own context-window figure. It was already being
+  parsed and then **discarded**; it now reaches `logRequest` and the log page shows
+  it as a bar with the re-sent turn count under it. This is the answer to "how full
+  is the context window".
+- Tool-call JSON now counts as output tokens (`stream.js`, `codexStream.js`).
+  Previously only text deltas counted, so tool-only turns reported `output_tokens: 0`
+  — 30% of a measured session's spend looked free.
+- The `$ cost` column on Kiro is an **analogy** at Anthropic list rates, useful for
+  making input cost legible. `kiroCredits` is the real spend.
+
+Spending less is behavioural, not a code fix: fewer turns, `/clear` more often, and
+don't route Claude Code's tiny utility calls (38% of requests) to an expensive
+account. See TrailMem #198.
+
+## Connect Timeouts — Happy Eyeballs (2026-08-01)
+
+Repeated `Kiro API error ... connection timed out` with a **~765ms** latency was not
+a provider outage. Node gives each candidate address 250ms to finish its TCP
+handshake before racing the next one; every AWS address behind
+`runtime.us-east-1.kiro.dev` needs ~310–400ms from here, so no address ever won
+inside the budget and Node rejected with `AggregateError [ETIMEDOUT]` after walking
+the whole list.
+
+`src/server.js` raises it via `setDefaultAutoSelectFamilyAttemptTimeout(2000)`
+(override with `AGENTOS_CONNECT_ATTEMPT_TIMEOUT_MS`). Measured effect on healthy
+requests: 2560ms → 321ms. A 765ms "timeout" is the fingerprint of this bug, not of a
+slow provider.
+
+`src/lib/netError.js` maps connect-level failures (`ENOTFOUND`, `ETIMEDOUT`,
+`ECONNRESET`, `UND_ERR_CONNECT_TIMEOUT`, …) to readable `ApiError`s. Before, they
+reached the express handler as `unhandled error` and dumped a full undici stack per
+failed request, were invisible in the request log, and could not trigger
+auto-fallback (which only retries an `ApiError`). Genuine bugs still keep their
+stack trace.
 
 ## Provider Evaluation Scripts
 

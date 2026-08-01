@@ -15,6 +15,7 @@ import { logRequest } from "../config/logStore.js";
 import { isFallbackEnabled } from "../config/keysStore.js";
 import { isRetryableApiError } from "../lib/fallback.js";
 import { ApiError } from "../lib/errors.js";
+import { networkErrorToApiError } from "../lib/netError.js";
 import { createAdapter } from "../registry.js";
 import { anthropicToKiro } from "./converter.js";
 
@@ -104,7 +105,20 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, ki
   } catch (err) {
     clearTimeout(timeout);
     if (err.name === "AbortError") throw new ApiError(504, "Kiro API timeout");
-    throw err;
+    // Connect-level failure (DNS/TCP/TLS) — a reachability problem, not a bug.
+    // Map it so it reads clearly, gets logged, and can trigger auto-fallback.
+    const mapped = networkErrorToApiError(err, provider?.name || "Kiro");
+    if (mapped !== err) {
+      recordError(model);
+      logRequest({
+        tool, rawModel, model,
+        providerId: provider.id, providerName: provider.name,
+        latencyMs: Date.now() - startTime,
+        status: "error",
+        error: mapped.message,
+      });
+    }
+    throw mapped;
   }
   clearTimeout(timeout);
 
