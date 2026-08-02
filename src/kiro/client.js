@@ -9,7 +9,7 @@
 // the raw model id untouched. lookupModelForTool() is the only place that
 // applies Kiro aliasing, and only when the tool is actually routed to Kiro.
 
-import { getToolProvider, resolveModelRoute, fallbackProviders, getProviderModels } from "../config/keysStore.js";
+import { getToolProvider, resolveModelRoute, fallbackProviders, getProviderModels, isOverBudget } from "../config/keysStore.js";
 import { recordRequest, recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
 import { isFallbackEnabled } from "../config/keysStore.js";
@@ -125,6 +125,25 @@ export function lookupModelForTool(tool, rawModel) {
 // `kiroPayload` is the wire-format request body (built by anthropicToKiro or
 // codexToKiro) — the executor no longer owns payload construction.
 export async function executeKiro({ adapter, provider, tool, model, rawModel, kiroPayload }) {
+  // Credit budget is enforced here, before anything is spent, because every Kiro
+  // request on every route passes through this function. Until 2026-08-02 the
+  // budget was display-only and an exhausted account kept serving.
+  if (isOverBudget(provider)) {
+    const err = new ApiError(
+      402,
+      `Kiro account "${provider.name}" has used its credit budget ` +
+        `(${(provider.usedCredits || 0).toFixed(2)} of ${provider.creditBudget} cr). ` +
+        `Raise or clear the budget in the dashboard, reset its usage, or route this tool to another account.`
+    );
+    err.budgetExhausted = true; // lib/fallback.js treats this as worth a fallback
+    logRequest({
+      tool, rawModel, model,
+      providerId: provider.id, providerName: provider.name,
+      latencyMs: 0, status: "error", error: err.message,
+    });
+    throw err;
+  }
+
   const url = adapter.getRequestUrl(model, {});
   const headers = adapter.getRequestHeaders();
 
@@ -208,7 +227,9 @@ export async function executeKiroWithFallback({ adapter: primaryAdapter, provide
   }
 
   for (const fp of fallbackProviders(tool, primaryProvider)) {
-    // Strict: only fall back to a Kiro provider that advertises this model.
+    // Strict: only fall back to a Kiro provider that advertises this model, and
+    // never onto an account that is already over its own credit budget.
+    if (isOverBudget(fp)) continue;
     const configured = getProviderModels(fp.id);
     if (!configured.includes(model) && !configured.includes(rawModel)) continue;
     let adapter;

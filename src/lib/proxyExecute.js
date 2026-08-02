@@ -30,6 +30,32 @@ export function setSseHeaders(res) {
   res.setHeader("X-Accel-Buffering", "no");
 }
 
+// Read a non-streaming upstream body as JSON with an honest error.
+//
+// All three routes used to call upstream.json() bare, so a 200 whose body is not
+// JSON (a compressed body with no content-encoding, an HTML error page from a
+// proxy in front of the provider, an empty body) surfaced as an opaque
+// "Internal gateway error" 500 from the express error handler — a gateway bug
+// message for an upstream fault. Observed live: an anthropic-compat provider
+// answered HTTP 200 with binary bytes and the client learned nothing.
+export async function readUpstreamJson(upstream, provider) {
+  const label = provider?.name ? `Provider "${provider.name}"` : "Upstream";
+  const text = await upstream.text();
+  if (!text.trim()) {
+    throw new ApiError(502, `${label} returned HTTP ${upstream.status} with an empty body`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    const printable = text.replace(/[^\x20-\x7e]/g, "?").slice(0, 160);
+    throw new ApiError(
+      502,
+      `${label} returned HTTP ${upstream.status} with a body that is not JSON ` +
+        `(content-type ${upstream.headers.get("content-type") || "none"}): ${printable}`
+    );
+  }
+}
+
 // Fetch the upstream provider and apply unified error mapping.
 //
 // On success: returns { upstream, startTime } — the caller consumes
@@ -141,6 +167,7 @@ export async function callUpstreamWithFallback({
   provider: primaryProvider,
   timeoutMs,
   anthropicVersion,
+  speaks,
 }) {
   let lastErr;
   try {
@@ -156,10 +183,12 @@ export async function callUpstreamWithFallback({
 
   for (const fp of fallbackProviders(tool, primaryProvider)) {
     // Passthrough (#171 item 3): forward the raw id untouched to the fallback
-    // provider; its own response/error is the source of truth.
+    // provider; its own response/error is the source of truth. `speaks` matters
+    // here: a fallback may speak a different protocol than the primary, in which
+    // case it needs the translating adapter (see registry.createAdapter).
     let adapter;
     try {
-      adapter = await createAdapter(fp);
+      adapter = await createAdapter(fp, { speaks });
     } catch {
       continue; // missing key / unknown type — skip this candidate silently
     }

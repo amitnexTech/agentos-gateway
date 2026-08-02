@@ -201,9 +201,7 @@ adminRouter.post("/routing/models", (req, res, next) => {
         400,
         model === "*" && providerId
           ? "The force route (*) needs a target model — there is no client id to fall back on"
-          : tool === "openai"
-            ? "Rejected: unknown provider, or a kiro provider on the openai slot (protocol mismatch)"
-            : "Rejected: unknown provider"
+          : "Rejected: unknown provider, or a provider type this route cannot serve"
       );
     }
     res.json({ ok: true, modelRoutes });

@@ -3,12 +3,11 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { dataDir } from "./envStore.js";
 
-// Tool slots: each tool/agent can route to a different provider
+// TOOL_SLOTS is the list of tool slots each provider can be bound to.
 // "claude"  = /v1/messages (Anthropic Messages API — Claude Code)
 // "codex"   = /v1/responses (OpenAI Responses API — Codex)
 // "openai"  = /v1/chat/completions (OpenAI Chat API — Cursor, etc.)
-//            Kiro is NOT supported on this slot (its protocol is Anthropic-
-//            shaped); route Kiro via the "claude" or "codex" slot instead.
+// Which provider types each slot accepts lives in TOOL_PROVIDER_TYPES below.
 export const TOOL_SLOTS = ["claude", "codex", "openai"];
 
 export function keysPath() {
@@ -60,20 +59,29 @@ export function getToolProvider(tool) {
 
 // Which provider types each tool slot can actually serve. This mirrors the
 // execution paths, it is not a policy choice:
-//   claude (/v1/messages)        — Anthropic-shaped in, Anthropic-shaped out
-//   codex  (/v1/responses)       — Kiro has its own converter; everything else is
-//                                  translated into OpenAI Chat Completions
-//   openai (/v1/chat/completions)— OpenAI Chat Completions, no translation layer
-// An anthropic-compat provider on the openai or codex slot used to be accepted
-// and then failed in the worst possible way: the gateway sent an OpenAI-shaped
-// body to /messages (no max_tokens -> 400 from a real provider), and on the codex
-// path the Anthropic-shaped reply had no `choices`, so the client got HTTP 200
-// with `output: []` — a silent empty answer. Refusing the pairing outright is the
-// only honest behaviour until a real OpenAI<->Anthropic translation layer exists.
+//   claude (/v1/messages)         — Anthropic-shaped in; served natively by
+//                                   anthropic-compat, by kiro through its own
+//                                   converter, and by OpenAI-format providers
+//                                   through the protocol bridge
+//   codex  (/v1/responses)        — Kiro has its own converter; everything else is
+//                                   translated into OpenAI Chat Completions, which
+//                                   an anthropic-compat provider now receives
+//                                   through the bridge
+//   openai (/v1/chat/completions) — OpenAI Chat Completions natively or bridged;
+//                                   Kiro is reached by bridging the chat body to
+//                                   Anthropic Messages first, which is the shape
+//                                   its own converter already consumes
+//
+// Before the bridge existed (lib/protocolBridge.js), an anthropic-compat provider
+// on the openai or codex slot failed in the worst possible way: the gateway sent
+// an OpenAI-shaped body to /messages (no max_tokens -> 400 from a real provider),
+// and on the codex path the Anthropic-shaped reply had no `choices`, so the client
+// got HTTP 200 with `output: []` — a silent empty answer. Every pairing listed
+// here now has a real translation path; anything absent is refused outright.
 const TOOL_PROVIDER_TYPES = {
-  claude: ["anthropic-compat", "kiro"],
-  codex: ["kiro", "openai-compat", "local-openai"],
-  openai: ["openai-compat", "local-openai"],
+  claude: ["anthropic-compat", "kiro", "openai-compat", "local-openai"],
+  codex: ["kiro", "openai-compat", "local-openai", "anthropic-compat"],
+  openai: ["openai-compat", "local-openai", "anthropic-compat", "kiro"],
 };
 
 export function toolSupportsProviderType(tool, type) {
@@ -82,6 +90,21 @@ export function toolSupportsProviderType(tool, type) {
 
 export function supportedTypesForTool(tool) {
   return TOOL_PROVIDER_TYPES[tool] || [];
+}
+
+// A Kiro account past its credit budget must stop serving. The budget was
+// decorative until 2026-08-02: creditBudget was only ever read by the dashboard
+// and the account CRUD route, so a 300cr account kept spending forever. Enforced
+// in kiro/client.js executeKiro, which every Kiro request goes through.
+// Only Kiro has credit accounting (its stream self-reports the burn), so other
+// provider types are never over budget.
+export function isOverBudget(provider) {
+  return Boolean(
+    provider &&
+      provider.type === "kiro" &&
+      provider.creditBudget > 0 &&
+      (provider.usedCredits || 0) >= provider.creditBudget
+  );
 }
 
 export function setToolProvider(tool, providerId) {
@@ -261,20 +284,19 @@ export function setFallbackEnabled(enabled) {
   return data.routing;
 }
 
-// Same-protocol enabled providers to try after `primary` fails, in creation
-// order. The protocol group follows the execution path of the route that
-// selected `primary`, NOT raw type equality:
-//   kiro         -> kiro             (executeKiro path; claude/codex slots)
-//   openai slot  -> openai-compat + local-openai (OpenAI chat SSE path)
-//   claude/codex -> anthropic-compat (anthropic SSE passthrough path)
-// A kiro provider is never offered to the openai slot (and vice versa): their
-// protocols do not match the route's execution path.
+// Enabled providers to try after `primary` fails, in creation order. Kiro is its
+// own island — executeKiro is a different execution path, and a Kiro account is
+// only ever a fallback for another Kiro account. Every other provider is fair
+// game for any slot it is allowed on, because the protocol bridge
+// (lib/protocolBridge.js) translates whichever direction is needed; the route
+// consumes the winner's adapter, so a fallback that speaks the other protocol is
+// handled correctly rather than mis-parsed.
 export function fallbackProviders(tool, primary) {
   if (!primary) return [];
-  let types;
-  if (primary.type === "kiro") types = new Set(["kiro"]);
-  else if (tool === "openai") types = new Set(["openai-compat", "local-openai"]);
-  else types = new Set(["anthropic-compat"]);
+  const types =
+    primary.type === "kiro"
+      ? new Set(["kiro"])
+      : new Set(supportedTypesForTool(tool).filter((type) => type !== "kiro"));
   return readAll().providers.filter(
     (p) => p.id !== primary.id && p.enabled !== false && types.has(p.type)
   );

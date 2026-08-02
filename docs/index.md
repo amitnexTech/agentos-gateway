@@ -16,6 +16,7 @@ Entry point for this project's docs. Every doc should be reachable from here
 ## Docs
 
 - [[architecture]] — gateway design, directory structure, provider types, adapter hierarchy, tool-slot routing/resolution, key features
+- [[protocol-bridge]] — OpenAI Chat ↔ Anthropic Messages translation both ways, streaming maps, what is dropped vs refused, cross-protocol routing
 - [[kiro-integration]] — Kiro provider, account management, auth model, model aliasing, connect-timeout fix
 - [[codex-integration]] — Codex `/v1/responses` non-Kiro path: Responses↔Chat-Completions translation, freeform tools, synthetic SSE reconstruction
 - [[security]] — dashboard auth, loopback binding, admin token, why /v1 stays unauthenticated

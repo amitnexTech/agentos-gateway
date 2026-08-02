@@ -101,26 +101,30 @@ Per-type specialization is intentionally thin:
 - `AnthropicCompatAdapter` — overrides `getRequestUrl` → `${baseUrl}/messages`, and `getRequestHeaders({anthropicVersion})` to send both `x-api-key` and (if present) `Authorization: Bearer`, plus the client's own `anthropic-version` header value forwarded through rather than hardcoded — this is how `/v1/messages` passthrough preserves the exact protocol version Claude Code asked for. `translateModelsResponse` reads Anthropic's `{data:[{id}]}` shape.
 - `KiroAdapter` — the odd one out. Its `baseUrl` is not user-supplied; the constructor derives it from `region` via `getRuntimeHost(region)` (`src/kiro/config.js`). `getRequestUrl` always returns the runtime host's root path (`${baseUrl}/`) — Kiro has one chat endpoint, not a per-model or per-action path. `getRequestHeaders()` delegates to `chatHeaders(apiKey)` in `src/kiro/api.js` for the full reverse-engineered header set (see [[kiro-integration]]). It also exposes `fetchModels()` and `getProfile()`, management-plane calls the other three adapter types don't need because their model lists come from a plain `/models` GET.
 
-None of the four adapter classes do request/response *protocol* translation for Anthropic Messages or OpenAI Responses shapes — that logic lives in the routes (`anthropic.js`, `responses.js`) and, for Kiro, in `src/kiro/converter.js` / `codexConverter.js` / `stream.js` / `codexStream.js`. The adapters only know how to reach the provider (URL + headers + auth) and how to speak its *native* request/response shape when one is forwarded directly (Chat Completions for openai-compat/local-openai, Messages for anthropic-compat).
+None of the four adapter classes do request/response *protocol* translation on their own — that logic lives in the routes (`anthropic.js`, `responses.js`), in `src/lib/protocolBridge.js` for the OpenAI↔Anthropic pairings, and in `src/kiro/converter.js` / `codexConverter.js` / `stream.js` / `codexStream.js` for Kiro. The four base adapters only know how to reach the provider (URL + headers + auth) and how to speak its *native* shape when one is forwarded directly (Chat Completions for openai-compat/local-openai, Messages for anthropic-compat).
+
+**Two bridged variants exist on top of them** (`src/adapters/bridge.js`): `chatOverAnthropic(Base)` and `anthropicOverChat(Base)` are mixins that override only `translateRequest` / `translateResponse` and set a `bridge` marker the routes read to pick a streaming pipe. They are mixins rather than fixed subclasses so a bridged adapter keeps its base's URL and headers — `anthropicOverChat(LocalOpenAIAdapter)` must keep the *no-auth* headers. `createAdapter(provider, { speaks })` applies one when the calling route's protocol differs from the provider's; see [[protocol-bridge]].
 
 ## Provider resolution: tool slots → provider → adapter
 
-Each slot can only be pointed at a provider whose protocol that route actually speaks. This is a mirror of the execution paths, not a policy:
+A slot can be pointed at any provider whose protocol that route either speaks natively or can be translated into. This mirrors the execution paths, it is not a policy:
 
-| slot | route | provider types |
-|---|---|---|
-| `claude` | `/v1/messages` | `anthropic-compat`, `kiro` |
-| `codex` | `/v1/responses` | `kiro`, `openai-compat`, `local-openai` |
-| `openai` | `/v1/chat/completions` | `openai-compat`, `local-openai` |
+| slot | route | provider types | native | via [[protocol-bridge]] |
+|---|---|---|---|---|
+| `claude` | `/v1/messages` | `anthropic-compat`, `kiro`, `openai-compat`, `local-openai` | `anthropic-compat`, `kiro` | `openai-compat`, `local-openai` |
+| `codex` | `/v1/responses` | `kiro`, `openai-compat`, `local-openai`, `anthropic-compat` | `kiro`, `openai-compat`, `local-openai` | `anthropic-compat` |
+| `openai` | `/v1/chat/completions` | `openai-compat`, `local-openai`, `anthropic-compat`, `kiro` | `openai-compat`, `local-openai` | `anthropic-compat`, `kiro` |
 
-`toolSupportsProviderType(tool, type)` in `keysStore.js` owns the table; `setToolProvider`, `setAllToolsProvider` (which now skips unsupported slots and reports them) and `setModelRoute` all refuse an unsupported pairing, the two routes re-check at request time, and the dashboard only offers compatible providers — an already-configured incompatible slot still shows, labelled *cannot serve this route*, rather than silently reading as `(none)`.
+Every pairing has a real path now. Kiro is the indirect case on the `openai` slot: it accepts Anthropic-*shaped* input over its own transport, so the chat body is bridged to Anthropic Messages first and then handed to Kiro's own converter (see [[kiro-integration]]).
+
+`toolSupportsProviderType(tool, type)` in `keysStore.js` owns the table; `setToolProvider`, `setAllToolsProvider` (which skips unsupported slots and reports them) and `setModelRoute` all refuse an unsupported pairing, all three routes re-check at request time, and the dashboard only offers compatible providers — an already-configured incompatible slot still shows, labelled *cannot serve this route*, rather than silently reading as `(none)`.
 
 **Why the enforcement exists (measured 2026-08-02).** The restriction was documented but never enforced, and an `anthropic-compat` provider on the wrong slot failed in the two worst possible ways:
 
 - `/v1/chat/completions` → the OpenAI-shaped body was posted to `/messages` with no `max_tokens`, which a real provider answers with `400 max_tokens: field required`.
 - `/v1/responses` → the same mismatched body went upstream, the Anthropic-shaped reply had no `choices`, and `chatToResponsesFormat` produced **HTTP 200 with `output: []`** — an empty answer that looks like a completed turn. Exactly the silent-success class of failure [[fallback-and-verification]] exists to prevent.
 
-Both now fail fast with a message naming the provider, its type, and the types the route needs.
+Both pairings are now *translated* rather than refused (see [[protocol-bridge]]), and both of those failure modes are covered by explicit checks. Anything still outside the table fails fast with a message naming the provider, its type, and the types the route needs.
 
 
 Routing is not per-request — it is a fixed assignment stored in `data/keys.json`, resolved once per incoming request:
@@ -135,8 +139,8 @@ modelRoutes = { claude: { "*":                   { providerId, model },   // for
 `src/config/keysStore.js` owns this file and exposes the three tool slots as a constant (`TOOL_SLOTS = ["claude", "codex", "openai"]`). Each of the three protocol routes resolves its own provider independently:
 
 - **`/v1/messages`** (`anthropic.js`) and **`/v1/responses`** (`responses.js`) call `lookupModelForTool(tool, rawModel)` from `src/kiro/client.js` — a Kiro-aware resolver that applies date-suffix model aliasing and the strict "model must be configured on this provider" gate **only** when the resolved provider is `kiro`; any other provider type receives the raw model id untouched (#171 item 3).
-- **`/v1/chat/completions`** (`proxy.js`) calls `lookupProviderForTool("openai", model)` directly from `keysStore.js`. This is stricter by default — it requires the model id to be one of the models explicitly bound to the `openai`-slot provider (`data.models` entries created via `setProviderModels()` in the dashboard) — but has one deliberate relaxation: if no explicit model binding matches, and the `openai` slot's bound provider is enabled and not `kiro`, the raw request is passed through to it anyway, letting the provider's own error (e.g. "model not found") reach the client instead of the gateway pre-emptively rejecting it. A `kiro` provider is always rejected on this slot regardless of bindings, since Kiro's protocol is Anthropic-shaped and would fail against an OpenAI chat endpoint.
-- Once a `provider` record is resolved, `createAdapter(provider)` (`src/registry.js`) looks up the class, reads the provider's API key out of `data/.env` via `envGet(apiKeyRef)` (throwing `MissingSecretError` if absent, except for `local-openai` which is allowed to have none), and constructs the adapter — passing `region` for Kiro, `baseUrl` for everything else.
+- **`/v1/chat/completions`** (`proxy.js`) uses the same `lookupModelForTool("openai", rawModel)` as the other two routes (it used to have its own `lookupProviderForTool` + relaxation block, which is gone). So all three slots now behave identically: a per-model override or force route wins over the slot, the id may be rewritten on the way upstream, a non-Kiro provider receives the raw id untouched even if it is not in the configured list (#171 item 3), and a Kiro provider gets its catalog aliasing plus the strict "must be a configured id" gate that exists because sending Kiro an unknown id is a ban risk.
+- Once a `provider` record is resolved, `createAdapter(provider, { speaks })` (`src/registry.js`) looks up the class, reads the provider's API key out of `data/.env` via `envGet(apiKeyRef)` (throwing `MissingSecretError` if absent, except for `local-openai` which is allowed to have none), and constructs the adapter — passing `region` for Kiro, `baseUrl` for everything else. `speaks` is the protocol of the *calling route* (`"openai-chat"` or `"anthropic-messages"`); when it differs from the provider's own, the adapter is wrapped in a translation mixin from `src/adapters/bridge.js`. See [[protocol-bridge]].
 
 ### Per-model routes (override a slot for one model id)
 
@@ -238,7 +242,9 @@ Reading tools from only the old shape is what left Codex able to chat but unable
 7. Enable/disable — per-provider toggle, disabled providers don't route
 8. Manual model add — when /models endpoint fails, add models manually
 9. Request logs — live log page with latency, tokens, cost, model verification
-10. Auto-fallback — opt-in, same-protocol retry on retriable errors; see [[fallback-and-verification]]
+10. Auto-fallback — opt-in retry on retriable errors, across protocols via the bridge; see [[fallback-and-verification]]
+11. Protocol bridge — OpenAI Chat ↔ Anthropic Messages both ways, so every provider type serves every route (Kiro included, via the Anthropic shape); see [[protocol-bridge]]
+12. Kiro credit budget enforcement — an account past its `creditBudget` is refused with 402 before spending; see [[kiro-integration]]
 
 ## Design principles
 

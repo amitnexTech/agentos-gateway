@@ -9,7 +9,7 @@ How `/v1/responses` (used by Codex) is served for standard (non-Kiro) providers:
 `src/routes/responses.js` has two independent branches for `POST /v1/responses`:
 
 - **Kiro provider** → `codexToKiro()` builds a Kiro payload directly (no detour through Chat Completions), and Kiro's own stream is consumed straight into Responses format via `codexStream.js`. See [[kiro-integration]].
-- **Standard provider** (openai-compat, anthropic-compat is not reachable here — see [[architecture]] for slot restrictions) → the Responses input is converted to Chat Completions messages, sent upstream as one non-streaming call, and the Chat Completions reply is converted back into Responses JSON or synthetic SSE.
+- **Standard provider** (`openai-compat` / `local-openai` natively; `anthropic-compat` through the [[protocol-bridge]]) → the Responses input is converted to Chat Completions messages, sent upstream as one non-streaming call, and the Chat Completions reply is converted back into Responses JSON or synthetic SSE. Because the bridge sits in the adapter, this branch needed no change to gain Anthropic providers: `translateRequest` maps the chat body to Anthropic Messages and `translateResponse` maps the reply back, so Codex no longer needs a Kiro account. Verified live 2026-08-02: `custom_tool_call` → `exec "ls -la"` from an `anthropic-compat` provider.
 
 The second branch is the one this doc covers, and it did not exist in the docs before this pass — it is the code path every non-Kiro Codex request actually takes.
 

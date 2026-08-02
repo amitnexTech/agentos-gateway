@@ -110,7 +110,7 @@ export function renderAdminPage() {
       <div class="panel-head">
         <h2>Routing</h2>
         <div style="display:flex;align-items:center;gap:14px">
-          <label title="When the bound provider fails with a retriable error (429/403/5xx/timeout), retry the same request on another enabled provider that speaks the same protocol. Off by default — keeps it clear which account is spending." style="display:flex;align-items:center;gap:6px;flex-direction:row;color:var(--ink);font-size:13px;font-weight:400;margin:0">
+          <label title="When the bound provider fails with a retriable error (429/403/5xx/timeout), retry the same request on another enabled provider allowed on this route — protocols are translated, so an Anthropic provider can back up an OpenAI one. Off by default — keeps it clear which account is spending." style="display:flex;align-items:center;gap:6px;flex-direction:row;color:var(--ink);font-size:13px;font-weight:400;margin:0">
             <input type="checkbox" id="fallbackToggle" style="min-height:auto;width:16px"> Auto-fallback
           </label>
           <button id="useAllBtn" type="button" disabled>Use for all</button>
@@ -314,9 +314,9 @@ export function renderAdminPage() {
       el("type").value=p.type; el("name").value=p.name; el("baseUrl").value=p.baseUrl; updateTypeMode();
     }
 
-    // Only provider types a route can actually serve are offered — the wrong
-    // pairing does not just fail, on the codex route it used to return an empty
-    // answer with HTTP 200.
+    // Only provider types a route can actually serve are offered. That is now
+    // almost everything — the protocol bridge translates OpenAI <-> Anthropic
+    // both ways — but Kiro still cannot serve /v1/chat/completions.
     function providersFor(tool) {
       const allowed = state.routing.supportedTypes?.[tool];
       return allowed ? state.providers.filter(p => allowed.includes(p.type)) : state.providers;
@@ -698,7 +698,7 @@ export function renderAdminPage() {
       const enabled = el("fallbackToggle").checked;
       try {
         await api("/admin/routing/fallback", { method: "POST", body: JSON.stringify({ enabled }) });
-        setNotice("Auto-fallback " + (enabled ? "ON — retriable errors retry on a same-protocol provider." : "OFF."), "ok");
+        setNotice("Auto-fallback " + (enabled ? "ON — retriable errors retry on another provider allowed on that route." : "OFF."), "ok");
         await refresh();
       } catch (err) {
         el("fallbackToggle").checked = !enabled; // revert on failure

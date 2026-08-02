@@ -3,10 +3,12 @@ import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
 import { anthropicToKiro } from "../kiro/converter.js";
 import { measureKiroPayload } from "../kiro/tokens.js";
 import { streamKiroToAnthropic, collectKiroResponse } from "../kiro/stream.js";
-import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
+import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders, readUpstreamJson } from "../lib/proxyExecute.js";
 import { pipeAnthropicSse, anthropicUsage } from "../lib/anthropicSse.js";
+import { pipeChatSseAsAnthropic } from "../lib/protocolBridge.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
+import { toolSupportsProviderType, supportedTypesForTool } from "../config/keysStore.js";
 import { createAdapter } from "../registry.js";
 import { ApiError } from "../lib/errors.js";
 
@@ -32,9 +34,22 @@ anthropicRouter.post("/messages", async (req, res, next) => {
     ({ provider, model } = lookupModelForTool("claude", rawModel));
     if (!provider) throw new ApiError(404, `Model "${rawModel}" not available on Claude Code provider`);
 
+    // Same table the dashboard and admin API enforce; re-checked here because a
+    // hand-edited keys.json could still name a provider this route cannot run.
+    if (!toolSupportsProviderType("claude", provider.type)) {
+      throw new ApiError(
+        400,
+        `Provider "${provider.name}" (${provider.type}) cannot serve /v1/messages — ` +
+          `this route needs ${supportedTypesForTool("claude").join(" or ")}.`
+      );
+    }
+
     let adapter;
     try {
-      adapter = await createAdapter(provider);
+      // OpenAI-format providers get the translating adapter: the Anthropic request
+      // is mapped to Chat Completions and the reply mapped back
+      // (lib/protocolBridge.js). anthropic-compat is a straight passthrough.
+      adapter = await createAdapter(provider, { speaks: "anthropic-messages" });
     } catch (err) {
       throw adapterErrorToApiError(err);
     }
@@ -78,25 +93,35 @@ anthropicRouter.post("/messages", async (req, res, next) => {
       return;
     }
 
-    // --- Standard Anthropic-compat provider: forward directly via the adapter ---
-    const { upstream, startTime, provider: served, fallback } = await callUpstreamWithFallback({
+    // --- Standard provider: passthrough for anthropic-compat, bridged for OpenAI ---
+    const { upstream, startTime, provider: served, adapter: servedAdapter, fallback } = await callUpstreamWithFallback({
       adapter, body: { ...req.body, model }, model, rawModel, tool: "claude", provider,
       anthropicVersion: req.headers["anthropic-version"],
+      speaks: "anthropic-messages",
     });
 
     if (stream) {
       setSseHeaders(res);
-      const { responseModel, responseId, usage } = await pipeAnthropicSse(upstream, res);
+      // Passthrough forwards raw Anthropic bytes; a bridged provider streams
+      // OpenAI chunks that have to be re-emitted as Anthropic events.
+      const sniffed = servedAdapter.bridge === "anthropic-over-chat"
+        ? await pipeChatSseAsAnthropic(upstream.body, res, { model })
+        : await pipeAnthropicSse(upstream, res);
       logRequest({
         tool: "claude", rawModel, model, providerId: served.id, providerName: served.name,
-        latencyMs: Date.now() - startTime, status: "ok", fallback,
-        responseModel, responseId, usage: anthropicUsage(usage),
+        latencyMs: Date.now() - startTime, fallback,
+        // A bridged stream that carried no content ended in an error event, so it
+        // must not be logged as a success.
+        status: sniffed.failed ? "error" : "ok",
+        ...(sniffed.failed ? { error: sniffed.error } : {}),
+        responseModel: sniffed.responseModel, responseId: sniffed.responseId,
+        usage: anthropicUsage(sniffed.usage),
       });
       res.end();
       return;
     }
 
-    const responseJson = await upstream.json();
+    const responseJson = servedAdapter.translateResponse(await readUpstreamJson(upstream, served));
     logRequest({
       tool: "claude", rawModel, model, providerId: served.id, providerName: served.name,
       latencyMs: Date.now() - startTime, status: "ok", fallback,

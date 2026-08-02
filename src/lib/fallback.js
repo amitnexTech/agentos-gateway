@@ -16,6 +16,9 @@ const RETRYABLE = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
 // Check whichever is present so both paths behave the same.
 export function isRetryableApiError(err) {
   if (!(err instanceof ApiError)) return false;
+  // Not an upstream failure at all: this account is out of credit budget. Another
+  // account may still have room, so it is worth a fallback.
+  if (err.budgetExhausted) return true;
   if (err.upstreamStatus != null) return RETRYABLE.has(err.upstreamStatus);
   return RETRYABLE.has(err.status);
 }

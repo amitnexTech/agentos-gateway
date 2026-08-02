@@ -6,15 +6,16 @@ How opt-in auto-fallback works, and the hard-won rules for verifying any change 
 
 ## Auto-fallback (2026-07-27)
 
-Opt-in, default OFF. When a tool's bound provider fails with a retriable upstream error (429/401/403/408/5xx/timeout), the same request retries on another enabled provider that speaks the **same protocol** — so the execution path (executeKiro vs anthropic SSE vs OpenAI chat SSE) is unchanged and the fallback speaks the right wire format.
+Opt-in, default OFF. When a tool's bound provider fails with a retriable upstream error (429/401/403/408/5xx/timeout), the same request retries on another enabled provider **allowed on that route** (`fallbackProviders(tool, primary)` filters by `supportedTypesForTool`). Since the [[protocol-bridge]] landed this pool spans protocols: an `anthropic-compat` provider can back up an `openai-compat` one and vice versa, because the route consumes the *winner's* adapter — `callUpstreamWithFallback` returns the adapter that served, so the response and streaming path match whatever protocol that provider speaks. Kiro remains its own island (a Kiro primary only falls back onto Kiro): `executeKiro` is a separate execution path.
 
 - **Toggle:** Dashboard Routing panel "Auto-fallback" checkbox, or `POST /admin/routing/fallback {enabled:bool}`; `GET /admin/routing` returns `fallbackEnabled`. Stored as `routing.fallbackEnabled` in `keys.json`.
-- **Chain** (`keysStore.fallbackProviders`): Kiro→Kiro (executeKiro path); openai slot→openai-compat+local-openai (OpenAI chat SSE); claude/codex passthrough→anthropic-compat (anthropic SSE). The protocol group follows the execution path, not raw type equality.
-- **Kiro fallback is strict** — a candidate is only tried if it advertises the resolved model (an unconfigured id is a ban risk). Passthrough fallback forwards the raw id untouched.
+- **Chain** (`keysStore.fallbackProviders`): Kiro→Kiro only (`executeKiro` is its own execution path); every other provider allowed on that slot for the rest, across protocols, since the [[protocol-bridge]] translates and the route consumes the winner's adapter.
+- **Kiro fallback is strict** — a candidate is only tried if it advertises the resolved model (an unconfigured id is a ban risk), and never if it is already over its own credit budget. Passthrough fallback forwards the raw id untouched.
+- **Budget exhaustion counts as retriable** — `executeKiro` refuses an over-budget account with a 402 carrying `budgetExhausted: true`, so with fallback ON the request moves to an account that still has room instead of failing. See [[kiro-integration]].
 - **Pre-stream only** — `callUpstream`/`executeKiro` throw before any byte is streamed, so retry is clean; mid-stream failures are NOT recovered.
 - Each failed attempt is logged as an error entry; `logPage.js` shows a "fallback" badge by the provider name. `logRequest` captures a `fallback` (bool) field.
 
-**Known gap:** no cross-account failover beyond this opt-in same-protocol retry — the old Python proxy had multi-account failover, this gateway does not. Tied to the decorative `creditBudget` gap in [[kiro-integration]]; both touch the same code path and are agreed to be done together.
+**Known gap:** no automatic multi-account rotation beyond this opt-in retry — the old Python proxy rotated accounts on every request; this gateway only moves on a failure (which now includes a Kiro account hitting its credit budget, see [[kiro-integration]]).
 
 ## Verifying a Codex or Claude path change
 

@@ -4,7 +4,7 @@ import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
 import { codexToKiro, collectCodexTools } from "../kiro/codexConverter.js";
 import { collectKiroAsCodex, streamKiroToCodex } from "../kiro/codexStream.js";
 import { measureKiroPayload } from "../kiro/tokens.js";
-import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
+import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders, readUpstreamJson } from "../lib/proxyExecute.js";
 import { openAiUsage } from "../lib/stream.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
@@ -285,7 +285,10 @@ responsesRouter.post("/responses", async (req, res, next) => {
 
     let adapter;
     try {
-      adapter = await createAdapter(provider);
+      // The non-Kiro branch below always talks OpenAI Chat Completions upstream,
+      // so an anthropic-compat provider gets the translating adapter. Kiro is
+      // never bridged — it has its own converter further down.
+      adapter = await createAdapter(provider, { speaks: "openai-chat" });
     } catch (err) {
       throw adapterErrorToApiError(err);
     }
@@ -341,17 +344,18 @@ responsesRouter.post("/responses", async (req, res, next) => {
     }
 
     // --- Standard provider: Responses input → chat/completions, then to Responses ---
-    // Only providers that speak OpenAI Chat Completions can serve this branch.
-    // An anthropic-compat provider used to be accepted here and failed silently:
-    // the OpenAI-shaped body went to /messages, the Anthropic-shaped reply had no
-    // `choices`, and the client got HTTP 200 with `output: []` — an empty answer
-    // that looks like a completed turn. Refuse it instead of faking a reply.
+    // This branch speaks OpenAI Chat Completions upstream. An anthropic-compat
+    // provider is served through the protocol bridge (lib/protocolBridge.js),
+    // which maps the chat body to Anthropic Messages and the reply back. Before
+    // that bridge existed the same pairing failed silently: the OpenAI-shaped body
+    // went to /messages, the Anthropic-shaped reply had no `choices`, and the
+    // client got HTTP 200 with `output: []`. Pairings with no translation path at
+    // all (nothing today besides a misconfigured slot) are still refused.
     if (!toolSupportsProviderType("codex", provider.type)) {
       throw new ApiError(
         400,
         `Provider "${provider.name}" (${provider.type}) cannot serve /v1/responses — ` +
-          `this route needs ${supportedTypesForTool("codex").join(" or ")}. ` +
-          `An anthropic-compat provider is reachable via /v1/messages instead.`
+          `this route needs ${supportedTypesForTool("codex").join(" or ")}.`
       );
     }
     const messages = inputToMessages(req.body.input, req.body.instructions);
@@ -375,9 +379,10 @@ responsesRouter.post("/responses", async (req, res, next) => {
 
     const { upstream, startTime, provider: served, adapter: servedAdapter, fallback } = await callUpstreamWithFallback({
       adapter, body: chatRequest, model, rawModel, tool: "codex", provider,
+      speaks: "openai-chat",
     });
 
-    const chatResponse = servedAdapter.translateResponse(await upstream.json());
+    const chatResponse = servedAdapter.translateResponse(await readUpstreamJson(upstream, served));
     // Logged after the body is read, so the log carries what the upstream actually
     // answered with. Logging before the read left responseModel and usage null on
     // this branch — model-swap detection and token accounting were dead here.

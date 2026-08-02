@@ -21,7 +21,17 @@ A grep across `src/` for `sqlite`, `sso`, `oidc`, `kiro-cli`, `refreshToken`, `c
 
 Dashboard UI exposes Edit (name + budget via prompts), Replace key, Reset credits, and Delete per account row. Multiple Kiro accounts are supported side by side, each identified by its own `profileArn`.
 
-**Known gap:** `creditBudget` is decorative. It is only read in `routes/kiroAccount.js` and `routes/adminPage.js` — no check exists anywhere in the proxy request path (`routes/proxy.js`, `routes/anthropic.js`, `routes/responses.js`), so an account past its budget keeps serving requests. Tied to the missing cross-account failover — both touch the same code path and are agreed to be done together. See TrailMem #179.
+**Credit budget is enforced (2026-08-02).** `creditBudget` used to be decorative — read only by `routes/kiroAccount.js` and the dashboard, with no check anywhere in the request path, so a 300 cr account kept spending forever. Enforcement now lives in one place: `executeKiro()` in `src/kiro/client.js`, which every Kiro request on every route passes through. Before anything is spent, `isOverBudget(provider)` (`keysStore.js`) compares `usedCredits` against `creditBudget`; an exhausted account is refused with **HTTP 402** naming the account and its usage (`"Kiro: Abhishek" has used its credit budget (10.40 of 10 cr)`), and the refusal is written to the request log so the stop is visible rather than silent.
+
+The error carries `budgetExhausted: true`, which `lib/fallback.js` treats as retriable — so with auto-fallback ON the request moves to another Kiro account that still has room, and `executeKiroWithFallback` also skips over-budget candidates in its chain. With fallback OFF (the default) the request simply fails with that 402. An absent or `0` budget means no limit; only Kiro has credit accounting, so other provider types are never over budget.
+
+Verified in `scripts/bridge-verify.mjs`: the refusal sends **nothing** upstream, an account at 9.9 of 10 still serves, an exhausted primary hands over to the second account (both rows visible in the log), and the same enforcement fires on `/v1/messages`.
+
+## Kiro on the `openai` slot
+
+Kiro also serves `/v1/chat/completions` (2026-08-02). It accepts Anthropic-*shaped* input, so the chat body is mapped to Anthropic Messages by the [[protocol-bridge]] and then handed to `anthropicToKiro()` — no Kiro-specific chat converter exists. On the way back, `collectKiroResponse()` produces an Anthropic message which `anthropicToChatResponse()` maps to a completion. Streaming chains the two existing converters through a `PassThrough`: Kiro stream → Anthropic SSE (`streamKiroToAnthropic`) → OpenAI chunks (`pipeAnthropicSseAsChat`), rather than adding a third stream converter to maintain.
+
+`proxy.js` now resolves its provider with the same `lookupModelForTool()` the other two routes use, so Kiro's catalog aliasing and its strict "only configured ids" gate apply there too. Verified live on `Kiro: Abhishek` / `claude-haiku-4.5`: non-stream returned `"Paris"`, streaming returned `1..5` as OpenAI chunks, and both logged `credits` (~0.005 cr) plus `contextUsagePercent`.
 
 ## Model aliasing
 

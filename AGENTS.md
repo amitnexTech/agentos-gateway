@@ -46,11 +46,13 @@ src/
 │   ├── base.js            # Abstract adapter
 │   ├── openaiCompat.js    # OpenAI-compatible providers
 │   ├── anthropicCompat.js # Anthropic-compatible providers (passthrough /v1/messages)
+│   ├── bridge.js          # Bridged adapters: chatOverAnthropic / anthropicOverChat mixins
 │   ├── localOpenAI.js     # Local providers (no auth)
 │   └── kiro.js            # Kiro adapter (URLs/headers; protocol handled by kiro/)
 ├── lib/
-│   ├── proxyExecute.js    # Shared upstream fetch + timeout + error map + SSE headers
-│   ├── anthropicSse.js    # Anthropic SSE passthrough + model/usage extraction
+│   ├── proxyExecute.js    # Shared upstream fetch + timeout + error map + SSE headers + JSON read
+│   ├── protocolBridge.js  # OpenAI Chat <-> Anthropic Messages translation, both directions + streaming
+│   ├── anthropicSse.js    # Anthropic SSE parser/passthrough + model/usage extraction
 │   ├── stream.js          # Generic OpenAI SSE stream piping
 │   ├── errors.js          # Error handling
 │   ├── modelFetch.js      # Auto-fetch models (with /v1 auto-detection)
@@ -71,13 +73,32 @@ data/                      # Runtime data (gitignored)
 | `openai-compat` | OpenRouter, Requesty, Groq, Together, any OpenAI-format API | API key |
 | `anthropic-compat` | Anthropic direct, Lumosel, any Anthropic-format API | API key |
 | `local-openai` | Ollama, LM Studio, llama.cpp | None |
-| `kiro` | Kiro (AWS CodeWhisperer) via `ksk_` API key — Anthropic-shaped requests over its own wire protocol | API key |
+| `kiro` | Kiro (AWS CodeWhisperer) via `ksk_` API key — Anthropic-shaped requests over its own wire protocol; per-account credit budget enforced | API key |
 
-A `kiro` provider is reachable only via the `claude` (`/v1/messages`) and `codex`
-(`/v1/responses`) slots — its protocol is not OpenAI chat, so the `openai` slot
-rejects it. Model-id aliasing (dated Claude names → Kiro's short catalog names)
-is Kiro-only and lives in `kiro/client.js`; non-Kiro providers receive the raw
-model id the client sent, untouched.
+A `kiro` provider is now reachable from all three slots. On `claude` and `codex` it
+uses its own converters; on `openai` the chat body is mapped to Anthropic Messages
+by the protocol bridge first, because that is the shape `anthropicToKiro` already
+consumes. Every other pairing works too: `src/lib/protocolBridge.js` maps OpenAI
+Chat Completions <-> Anthropic Messages in both directions (request, response and
+streaming), so an `anthropic-compat` provider serves `/v1/chat/completions` and
+`/v1/responses`, and an `openai-compat` / `local-openai` provider serves
+`/v1/messages`. `createAdapter(provider, { speaks })` wraps the adapter in a
+translation mixin (`src/adapters/bridge.js`) when the route's protocol differs
+from the provider's. Model-id aliasing (dated Claude names → Kiro's short catalog
+names) is Kiro-only and lives in `kiro/client.js`; non-Kiro providers receive the
+raw model id the client sent, untouched.
+
+Kiro credit budgets are ENFORCED in `executeKiro()` — an account past its
+`creditBudget` is refused with HTTP 402 before anything is spent (the refusal is
+logged), and with auto-fallback ON the request moves to another Kiro account that
+still has room. `isOverBudget()` lives in `keysStore.js`.
+
+Hard rule for every pairing: never answer HTTP 200 with an empty body. An
+untranslatable client field is a 400 with nothing sent upstream; an unusable
+upstream reply (no content blocks, no `choices`, a non-JSON 200) is a 502 naming
+the provider; a stream that carried nothing ends in an explicit error event and
+is logged as an error. Verify with `node scripts/bridge-verify.mjs` (27 checks,
+fake upstreams) and `node scripts/bridge-live-probe.mjs` (real provider).
 
 ## Codex wire format (`/v1/responses`)
 
@@ -101,15 +122,17 @@ any tool at all (fixed 2026-07-29).
 ## Key Features
 
 1. **Per-tool routing** — Claude Code, Codex, OpenAI tools each independently routed to any provider, with a per-slot *Model* dropdown that pins which of that provider's models actually runs
-2. **Per-model routes + force route** — one model id can go to a different provider than its tool's slot, optionally renamed upstream (`claude-sonnet-5` → aeorlink as `claude-sonnet-4-5-20250929`); `"*"` forces every model onto one target so the dashboard decides what actually runs, and `exempt` keeps a model id out of that force route (dashboard: Routing → Model overrides; API: `GET`/`POST /admin/routing/models`)
-3. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
-4. **Token tracking** — input/output/cache_read/cache_write per request
-5. **Cost estimation** — approximate $ cost per request based on Anthropic pricing
-6. **Model alias mapping** — Claude Code dated names auto-resolved (claude-sonnet-4-20250514 → claude-sonnet-4.5)
-7. **Auto /v1 detection** — base URL auto-corrected if user doesn't add /v1
-8. **Enable/Disable** — per-provider toggle, disabled providers don't route
-9. **Manual model add** — when /models endpoint fails, add models manually
-10. **Request logs** — live log page with latency, tokens, cost, model verification
+2. **Protocol bridge** — OpenAI Chat Completions <-> Anthropic Messages translated both ways (`src/lib/protocolBridge.js`), so every provider type serves every route: Codex on Anthropic providers, Claude Code on Groq/OpenRouter/Ollama, Kiro on `/v1/chat/completions`
+3. **Kiro credit budget enforcement** — an account past its `creditBudget` is refused with 402 before spending, and auto-fallback hands over to an account with room
+4. **Per-model routes + force route** — one model id can go to a different provider than its tool's slot, optionally renamed upstream (`claude-sonnet-5` → aeorlink as `claude-sonnet-4-5-20250929`); `"*"` forces every model onto one target so the dashboard decides what actually runs, and `exempt` keeps a model id out of that force route (dashboard: Routing → Model overrides; API: `GET`/`POST /admin/routing/models`)
+5. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
+6. **Token tracking** — input/output/cache_read/cache_write per request
+7. **Cost estimation** — approximate $ cost per request based on Anthropic pricing
+8. **Model alias mapping** — Claude Code dated names auto-resolved (claude-sonnet-4-20250514 → claude-sonnet-4.5)
+9. **Auto /v1 detection** — base URL auto-corrected if user doesn't add /v1
+10. **Enable/Disable** — per-provider toggle, disabled providers don't route
+11. **Manual model add** — when /models endpoint fails, add models manually
+12. **Request logs** — live log page with latency, tokens, cost, model verification
 
 ## Running
 
