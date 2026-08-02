@@ -100,15 +100,16 @@ any tool at all (fixed 2026-07-29).
 
 ## Key Features
 
-1. **Per-tool routing** — Claude Code, Codex, OpenAI tools each independently routed to any provider
-2. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
-3. **Token tracking** — input/output/cache_read/cache_write per request
-4. **Cost estimation** — approximate $ cost per request based on Anthropic pricing
-5. **Model alias mapping** — Claude Code dated names auto-resolved (claude-sonnet-4-20250514 → claude-sonnet-4.5)
-6. **Auto /v1 detection** — base URL auto-corrected if user doesn't add /v1
-7. **Enable/Disable** — per-provider toggle, disabled providers don't route
-8. **Manual model add** — when /models endpoint fails, add models manually
-9. **Request logs** — live log page with latency, tokens, cost, model verification
+1. **Per-tool routing** — Claude Code, Codex, OpenAI tools each independently routed to any provider, with a per-slot *Model* dropdown that pins which of that provider's models actually runs
+2. **Per-model routes + force route** — one model id can go to a different provider than its tool's slot, optionally renamed upstream (`claude-sonnet-5` → aeorlink as `claude-sonnet-4-5-20250929`); `"*"` forces every model onto one target so the dashboard decides what actually runs, and `exempt` keeps a model id out of that force route (dashboard: Routing → Model overrides; API: `GET`/`POST /admin/routing/models`)
+3. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
+4. **Token tracking** — input/output/cache_read/cache_write per request
+5. **Cost estimation** — approximate $ cost per request based on Anthropic pricing
+6. **Model alias mapping** — Claude Code dated names auto-resolved (claude-sonnet-4-20250514 → claude-sonnet-4.5)
+7. **Auto /v1 detection** — base URL auto-corrected if user doesn't add /v1
+8. **Enable/Disable** — per-provider toggle, disabled providers don't route
+9. **Manual model add** — when /models endpoint fails, add models manually
+10. **Request logs** — live log page with latency, tokens, cost, model verification
 
 ## Running
 

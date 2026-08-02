@@ -16,16 +16,17 @@ export function keysPath() {
 }
 
 function readAll() {
-  if (!existsSync(keysPath())) return { providers: [], models: [], routing: {} };
+  if (!existsSync(keysPath())) return { providers: [], models: [], routing: {}, modelRoutes: {} };
   try {
     const parsed = JSON.parse(readFileSync(keysPath(), "utf8"));
     return {
       providers: Array.isArray(parsed.providers) ? parsed.providers : [],
       models: Array.isArray(parsed.models) ? parsed.models : [],
       routing: parsed.routing || {},
+      modelRoutes: parsed.modelRoutes || {},
     };
   } catch {
-    return { providers: [], models: [], routing: {} };
+    return { providers: [], models: [], routing: {}, modelRoutes: {} };
   }
 }
 
@@ -57,30 +58,187 @@ export function getToolProvider(tool) {
   return data.providers.find((p) => p.id === providerId) || null;
 }
 
+// Which provider types each tool slot can actually serve. This mirrors the
+// execution paths, it is not a policy choice:
+//   claude (/v1/messages)        — Anthropic-shaped in, Anthropic-shaped out
+//   codex  (/v1/responses)       — Kiro has its own converter; everything else is
+//                                  translated into OpenAI Chat Completions
+//   openai (/v1/chat/completions)— OpenAI Chat Completions, no translation layer
+// An anthropic-compat provider on the openai or codex slot used to be accepted
+// and then failed in the worst possible way: the gateway sent an OpenAI-shaped
+// body to /messages (no max_tokens -> 400 from a real provider), and on the codex
+// path the Anthropic-shaped reply had no `choices`, so the client got HTTP 200
+// with `output: []` — a silent empty answer. Refusing the pairing outright is the
+// only honest behaviour until a real OpenAI<->Anthropic translation layer exists.
+const TOOL_PROVIDER_TYPES = {
+  claude: ["anthropic-compat", "kiro"],
+  codex: ["kiro", "openai-compat", "local-openai"],
+  openai: ["openai-compat", "local-openai"],
+};
+
+export function toolSupportsProviderType(tool, type) {
+  return (TOOL_PROVIDER_TYPES[tool] || []).includes(type);
+}
+
+export function supportedTypesForTool(tool) {
+  return TOOL_PROVIDER_TYPES[tool] || [];
+}
+
 export function setToolProvider(tool, providerId) {
   if (!TOOL_SLOTS.includes(tool)) return null;
   const data = readAll();
+  const previous = data.routing[tool];
   if (providerId) {
     const provider = data.providers.find((p) => p.id === providerId);
     if (!provider) return null;
+    if (!toolSupportsProviderType(tool, provider.type)) return null;
     data.routing[tool] = providerId;
   } else {
     delete data.routing[tool];
   }
+  dropStaleForceRoute(data, tool, previous);
   writeAll(data);
   return data.routing;
 }
 
-// Convenience: set all tools to the same provider (1-click "use everywhere")
+// The dashboard sets a slot's forced model (modelRoutes[tool]["*"]) as "this
+// provider, this model". Once the slot moves to another provider that pairing is
+// meaningless, and leaving it would silently keep sending traffic to the old
+// account while the dropdown shows the new one. A force route the user aimed at
+// some OTHER provider on purpose (from the overrides panel) is left alone.
+function dropStaleForceRoute(data, tool, previousProviderId) {
+  if (!previousProviderId) return;
+  const routes = data.modelRoutes[tool];
+  const value = routes?.[WILDCARD];
+  const owner = typeof value === "string" ? value : value?.providerId;
+  if (owner !== previousProviderId || owner === data.routing[tool]) return;
+  delete routes[WILDCARD];
+  if (!Object.keys(routes).length) delete data.modelRoutes[tool];
+}
+
+// Convenience: set every slot the provider can actually serve (1-click "use
+// everywhere"). Slots whose protocol the provider cannot speak are skipped
+// rather than silently mis-wired — the return value says which were skipped.
 export function setAllToolsProvider(providerId) {
   const data = readAll();
   const provider = data.providers.find((p) => p.id === providerId);
   if (!provider) return null;
+  const skipped = [];
   for (const tool of TOOL_SLOTS) {
+    if (!toolSupportsProviderType(tool, provider.type)) {
+      skipped.push(tool);
+      continue;
+    }
+    const previous = data.routing[tool];
     data.routing[tool] = providerId;
+    dropStaleForceRoute(data, tool, previous);
   }
   writeAll(data);
-  return data.routing;
+  return { routing: data.routing, skipped };
+}
+
+// --- Per-model routes (override the tool's default provider) -----------
+// modelRoutes = {
+//   claude: {
+//     "*":                    { providerId, model },   // force: everything else
+//     "claude-sonnet-5":      { providerId, model },   // one model, own target
+//     "claude-sonnet-5[1M]":  { exempt: true },        // untouched by the force
+//   }, ...
+// }
+//
+// A tool slot binds ONE provider, so every model a client asks for lands on the
+// same account. That is wrong for cost: Claude Code sends its small background
+// calls (topic detection and friends) under a different model id than the real
+// work — measured 64 of 200 requests, 20% of the credits, each carrying the full
+// ~140KB history for a 5-token answer. A per-model override sends exactly those
+// to a cheap account while the real work stays where it is.
+//
+// The key is the id the CLIENT sends; `model` is what to forward upstream. They
+// differ constantly, because no two catalogs name a model the same way
+// (claude-sonnet-5 / anthropic/claude-3.5-sonnet / claude-sonnet-4-5-20250929).
+// The mapping is explicit and user-chosen on purpose: guessing it from fetched
+// model names would silently serve a different model than asked for, which is
+// exactly what the swap detection in logStore.js exists to catch.
+//
+// Three special forms:
+//   "*"             — the force route: applies to every model id with no exact
+//                     entry, so an agent can ask for anything and still get the
+//                     one model the dashboard chose.
+//   { exempt: true } — opts a single model id OUT of the force route, keeping the
+//                     tool's own provider and the client's id. Claude Code needs
+//                     this: its subagent/auto-mode classifier calls (see
+//                     CLAUDE_CODE_SUBAGENT_MODEL, e.g. "claude-sonnet-5[1M]")
+//                     must keep reaching a model that can serve them, or auto
+//                     mode stops working.
+//   a bare string   — legacy shorthand for "same id, different provider".
+//
+// Exact entries always beat "*". Everything then follows the same rules as a
+// bound provider (must exist, must be enabled, Kiro still gates on its list).
+
+const WILDCARD = "*";
+
+export function getModelRoutes(tool) {
+  const all = readAll().modelRoutes;
+  return tool ? all[tool] || {} : all;
+}
+
+// Normalise every stored shape to { providerId, model } | { exempt: true }.
+function routeEntry(value, clientModelId) {
+  if (!value) return null;
+  if (typeof value === "string") return { providerId: value, model: clientModelId };
+  if (value.exempt) return { exempt: true };
+  if (!value.providerId) return null;
+  return { providerId: value.providerId, model: value.model || clientModelId };
+}
+
+// Resolve a (tool, model) override to { provider, model } — `model` being the id
+// to send upstream. Returns { exempt: true } when the model is explicitly opted
+// out of the force route, and null when no override applies.
+export function resolveModelRoute(tool, modelId) {
+  const data = readAll();
+  const byModel = data.modelRoutes?.[tool];
+  if (!byModel) return null;
+
+  // Exact entry first: it is the only way to keep one model out of a force route.
+  const exact = routeEntry(byModel[modelId], modelId);
+  if (exact?.exempt) return { exempt: true };
+  const entry = exact || routeEntry(byModel[WILDCARD], modelId);
+  if (!entry) return null;
+
+  const provider = data.providers.find((p) => p.id === entry.providerId);
+  if (!provider || provider.enabled === false) return null;
+  return { provider, model: entry.model };
+}
+
+// Write one entry. `route` shapes:
+//   { providerId, model? }  — route (and optionally rename) this model id
+//   { exempt: true }        — keep this model id on the tool's own provider
+//   null / undefined        — clear the entry
+// modelId may be "*" to set the force route for every other model.
+export function setModelRoute(tool, modelId, route) {
+  if (!TOOL_SLOTS.includes(tool) || !modelId) return null;
+  const data = readAll();
+
+  if (route?.exempt) {
+    data.modelRoutes[tool] = { ...(data.modelRoutes[tool] || {}), [modelId]: { exempt: true } };
+  } else if (route?.providerId) {
+    const provider = data.providers.find((p) => p.id === route.providerId);
+    if (!provider) return null;
+    // Same protocol rule as the tool slots: a provider that cannot speak this
+    // slot's wire format must not become reachable through an override either.
+    if (!toolSupportsProviderType(tool, provider.type)) return null;
+    const value = { providerId: route.providerId, model: route.model || modelId };
+    // A force route has no client id to fall back on, so it must name its target.
+    if (modelId === WILDCARD && !route.model) return null;
+    data.modelRoutes[tool] = { ...(data.modelRoutes[tool] || {}), [modelId]: value };
+  } else {
+    if (data.modelRoutes[tool]) delete data.modelRoutes[tool][modelId];
+    if (data.modelRoutes[tool] && !Object.keys(data.modelRoutes[tool]).length) {
+      delete data.modelRoutes[tool];
+    }
+  }
+  writeAll(data);
+  return data.modelRoutes;
 }
 
 // --- Auto-fallback (default OFF) ---------------------------------------
@@ -170,6 +328,16 @@ export function deleteProvider(id) {
   // Remove from routing if assigned
   for (const tool of TOOL_SLOTS) {
     if (data.routing[tool] === id) delete data.routing[tool];
+    // …and from any per-model override, otherwise the model would resolve to a
+    // provider that no longer exists.
+    const routes = data.modelRoutes[tool];
+    if (routes) {
+      for (const [modelId, value] of Object.entries(routes)) {
+        const providerId = typeof value === "string" ? value : value?.providerId;
+        if (providerId === id) delete routes[modelId];
+      }
+      if (!Object.keys(routes).length) delete data.modelRoutes[tool];
+    }
   }
   data.providers = data.providers.filter((p) => p.id !== id);
   data.models = data.models.filter((m) => m.providerId !== id);
@@ -219,6 +387,13 @@ export function getToolModels(tool) {
 export function getEnabledModels() {
   const data = readAll();
   const activeProviderIds = new Set(Object.values(data.routing));
+  // Providers reachable only through a per-model override serve real traffic too.
+  for (const routes of Object.values(data.modelRoutes || {})) {
+    for (const value of Object.values(routes)) {
+      const providerId = typeof value === "string" ? value : value?.providerId;
+      if (providerId) activeProviderIds.add(providerId);
+    }
+  }
   if (!activeProviderIds.size) return [];
   const seen = new Set();
   return data.models
@@ -245,5 +420,6 @@ export function replace(newData) {
     providers: Array.isArray(newData.providers) ? newData.providers : [],
     models: Array.isArray(newData.models) ? newData.models : [],
     routing: newData.routing || {},
+    modelRoutes: newData.modelRoutes || {},
   });
 }

@@ -31,6 +31,12 @@ const NET_CODES = {
   UND_ERR_SOCKET: [502, "socket closed unexpectedly"],
   CERT_HAS_EXPIRED: [502, "upstream TLS certificate has expired"],
   DEPTH_ZERO_SELF_SIGNED_CERT: [502, "upstream TLS certificate is self-signed"],
+  // Rejections undici raises before any socket work, from a malformed baseUrl.
+  // These carry NO `code` — the message is the only signal, so it doubles as the
+  // key. Without them a mistyped baseUrl (e.g. a port on undici's blocked list)
+  // surfaced as "Internal gateway error" plus a stack, with nothing in the log.
+  "bad port": [502, "provider baseUrl uses a port Node refuses to connect to"],
+  "unknown scheme": [502, "provider baseUrl scheme must be http or https"],
 };
 
 // Extract the underlying network code from a fetch rejection. undici nests the
@@ -39,6 +45,7 @@ function netCode(err) {
   let e = err;
   for (let depth = 0; e && depth < 3; depth++) {
     if (e.code && NET_CODES[e.code]) return e.code;
+    if (e.message && NET_CODES[e.message]) return e.message;
     // AggregateError from a multi-address connect: every inner error shares the code.
     if (Array.isArray(e.errors)) {
       for (const inner of e.errors) {

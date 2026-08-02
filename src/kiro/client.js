@@ -9,7 +9,7 @@
 // the raw model id untouched. lookupModelForTool() is the only place that
 // applies Kiro aliasing, and only when the tool is actually routed to Kiro.
 
-import { lookupProviderForTool, getToolProvider, fallbackProviders, getProviderModels } from "../config/keysStore.js";
+import { getToolProvider, resolveModelRoute, fallbackProviders, getProviderModels } from "../config/keysStore.js";
 import { recordRequest, recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
 import { isFallbackEnabled } from "../config/keysStore.js";
@@ -29,19 +29,54 @@ const MODEL_ALIASES = {
   "claude-haiku-3.5-20241022": "claude-haiku-4.5",
 };
 
-// Resolve a (possibly date-suffixed) Claude model id to a Kiro catalog id.
-// Kiro-only: callers must only use this on the Kiro provider path.
+// Candidate Kiro catalog ids for a model id a client sent, in decreasing order
+// of fidelity. The caller keeps the first one the account actually advertises,
+// so nothing is guessed away when an exact match exists.
+//
+// Decorations that get peeled: an explicit alias, a trailing capability marker in
+// brackets (the form CLAUDE_CODE_SUBAGENT_MODEL is written in, e.g.
+// "claude-sonnet-5[1M]" — measured 2026-08-02, Claude Code does NOT send that
+// suffix on the wire, so this is insurance for clients that do, not a live fix),
+// the -YYYYMMDD date suffix, and finally Anthropic's dashed version style
+// ("claude-sonnet-4-5") which Kiro spells with a dot ("claude-sonnet-4.5").
+export function kiroModelCandidates(model) {
+  const out = [];
+  const push = (m) => { if (m && !out.includes(m)) out.push(m); };
+
+  push(model);
+  if (MODEL_ALIASES[model]) push(MODEL_ALIASES[model]);
+
+  const undecorated = model.replace(/\[[^\]]*\]$/, "");
+  push(undecorated);
+  if (MODEL_ALIASES[undecorated]) push(MODEL_ALIASES[undecorated]);
+
+  const undated = undecorated.replace(/-\d{8}$/, "");
+  push(undated);
+  if (MODEL_ALIASES[undated]) push(MODEL_ALIASES[undated]);
+
+  // claude-sonnet-4-5 -> claude-sonnet-4.5
+  push(undated.replace(/-(\d+)-(\d+)$/, "-$1.$2"));
+
+  return out;
+}
+
+// Single best-guess resolution, for callers with no catalog to check against.
+// Kiro-only: never apply this to a non-Kiro provider.
 export function resolveKiroModel(model) {
-  if (MODEL_ALIASES[model]) return MODEL_ALIASES[model];
-  const stripped = model.replace(/-\d{8}$/, "");
-  if (stripped !== model) return stripped;
-  return model;
+  const candidates = kiroModelCandidates(model);
+  return candidates[candidates.length - 1] || model;
 }
 
 // Look up the provider bound to a tool for the given model id, applying Kiro
 // alias resolution only when the tool is routed to a Kiro provider.
 //
+// A per-model override (keysStore modelRoutes) wins over the tool's default
+// provider — that is how a cheap background model gets kept off an expensive
+// account without moving the whole tool. An override may also carry the upstream
+// model id, since catalogs disagree on names; that id is what gets forwarded.
+//
 // Returns { provider, model } where `model` is what to forward upstream:
+//  - override with a target model -> that id (client's id stays in rawModel)
 //  - non-Kiro provider -> the raw id, untouched, ALWAYS forwarded to the bound
 //    provider (the configured list is advisory, not a gate — #171 item 3)
 //  - Kiro provider -> the resolved (short) id when a dated id was sent; only
@@ -55,27 +90,30 @@ export function resolveKiroModel(model) {
 // upstream answer (#171 item 3). The redundant getToolModels() re-check that
 // used to live in each route's Kiro branch is gone (#171 item 4).
 export function lookupModelForTool(tool, rawModel) {
-  const bound = getToolProvider(tool);
+  const route = resolveModelRoute(tool, rawModel);
+  // `exempt` means this model id is opted out of a force route: tool's own
+  // provider, client's own id. Claude Code's subagent/auto-mode classifier
+  // models need that, or auto mode breaks.
+  const forced = route && !route.exempt ? route : null;
+  const bound = forced?.provider || getToolProvider(tool);
+  if (!bound || bound.enabled === false) return { provider: null, model: rawModel };
+  // An override's target id is deliberate, so it is what Kiro gets gated on too.
+  const wanted = forced ? forced.model : rawModel;
 
   // Kiro is strict: only forward ids configured on the bound Kiro provider
-  // (after dated-id alias resolution). An unmatched id is rejected (404).
-  if (bound?.type === "kiro") {
-    let provider = lookupProviderForTool(tool, rawModel);
-    if (provider) return { provider, model: rawModel };
-    const model = resolveKiroModel(rawModel);
-    if (model !== rawModel) {
-      provider = lookupProviderForTool(tool, model);
-      if (provider) return { provider, model };
+  // (after peeling the decorations clients add). An unmatched id is rejected (404).
+  if (bound.type === "kiro") {
+    const configured = getProviderModels(bound.id);
+    for (const candidate of kiroModelCandidates(wanted)) {
+      if (configured.includes(candidate)) return { provider: bound, model: candidate };
     }
-    return { provider: null, model: rawModel };
+    return { provider: null, model: wanted };
   }
 
-  // Passthrough (non-Kiro) provider — #171 item 3: forward the raw id untouched
+  // Passthrough (non-Kiro) provider — #171 item 3: forward the id untouched
   // regardless of the configured list; the provider's own response is the source
-  // of truth. A disabled bound provider is not relaxed (no traffic to disabled).
-  if (bound && bound.enabled !== false) return { provider: bound, model: rawModel };
-
-  return { provider: null, model: rawModel };
+  // of truth. A disabled provider is not relaxed (no traffic to disabled).
+  return { provider: bound, model: wanted };
 }
 
 // Execute a Kiro chat request: fetch the runtime host with a pre-built Kiro

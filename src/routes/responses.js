@@ -5,8 +5,10 @@ import { codexToKiro, collectCodexTools } from "../kiro/codexConverter.js";
 import { collectKiroAsCodex, streamKiroToCodex } from "../kiro/codexStream.js";
 import { measureKiroPayload } from "../kiro/tokens.js";
 import { callUpstreamWithFallback, adapterErrorToApiError, setSseHeaders } from "../lib/proxyExecute.js";
+import { openAiUsage } from "../lib/stream.js";
 import { recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
+import { toolSupportsProviderType, supportedTypesForTool } from "../config/keysStore.js";
 import { createAdapter } from "../registry.js";
 import { ApiError } from "../lib/errors.js";
 
@@ -339,6 +341,19 @@ responsesRouter.post("/responses", async (req, res, next) => {
     }
 
     // --- Standard provider: Responses input → chat/completions, then to Responses ---
+    // Only providers that speak OpenAI Chat Completions can serve this branch.
+    // An anthropic-compat provider used to be accepted here and failed silently:
+    // the OpenAI-shaped body went to /messages, the Anthropic-shaped reply had no
+    // `choices`, and the client got HTTP 200 with `output: []` — an empty answer
+    // that looks like a completed turn. Refuse it instead of faking a reply.
+    if (!toolSupportsProviderType("codex", provider.type)) {
+      throw new ApiError(
+        400,
+        `Provider "${provider.name}" (${provider.type}) cannot serve /v1/responses — ` +
+          `this route needs ${supportedTypesForTool("codex").join(" or ")}. ` +
+          `An anthropic-compat provider is reachable via /v1/messages instead.`
+      );
+    }
     const messages = inputToMessages(req.body.input, req.body.instructions);
     // Tools come either top-level or inside an `additional_tools` input item.
     const { tools: codexTools, freeform } = collectCodexTools(req.body);
@@ -361,12 +376,18 @@ responsesRouter.post("/responses", async (req, res, next) => {
     const { upstream, startTime, provider: served, adapter: servedAdapter, fallback } = await callUpstreamWithFallback({
       adapter, body: chatRequest, model, rawModel, tool: "codex", provider,
     });
+
+    const chatResponse = servedAdapter.translateResponse(await upstream.json());
+    // Logged after the body is read, so the log carries what the upstream actually
+    // answered with. Logging before the read left responseModel and usage null on
+    // this branch — model-swap detection and token accounting were dead here.
     logRequest({
       tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
       latencyMs: Date.now() - startTime, status: "ok", fallback,
+      responseModel: chatResponse?.model || null,
+      responseId: chatResponse?.id || null,
+      usage: openAiUsage(chatResponse?.usage),
     });
-
-    const chatResponse = servedAdapter.translateResponse(await upstream.json());
 
     if (stream) {
       setSseHeaders(res);

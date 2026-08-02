@@ -1,6 +1,17 @@
+import { setDefaultResultOrder } from "node:dns";
 import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { createApp } from "./app.js";
 import { adminToken } from "./lib/adminAuth.js";
+
+// This host has no IPv6 default route, but the resolver still hands back
+// NAT64-synthesized AAAA records (64:ff9b::...) for *.kiro.dev. Node's default
+// resolution order is "verbatim", so it tries those unroutable addresses FIRST
+// and each one has to burn the connect-attempt timeout before IPv4 gets a turn.
+// Measured symptom: AggregateError [ETIMEDOUT] with ENETUNREACH on the 64:ff9b::
+// entries, which the SDK retries 3x — re-uploading the whole conversation each
+// time for nothing. curl -6 fails instantly, so only Node was affected.
+// Asking for IPv4 first skips the dead family outright.
+setDefaultResultOrder("ipv4first");
 
 // Node's Happy Eyeballs gives each candidate address only 250ms to complete its
 // TCP handshake before racing the next one. Every AWS address behind

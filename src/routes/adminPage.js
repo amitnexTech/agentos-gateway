@@ -117,9 +117,57 @@ export function renderAdminPage() {
         </div>
       </div>
       <div class="panel-body" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px" id="routingPanel">
-        <label>Claude Code (/v1/messages)<select id="route-claude"></select></label>
-        <label>Codex (/v1/responses)<select id="route-codex"></select></label>
-        <label>OpenAI (/v1/chat/completions)<select id="route-openai"></select></label>
+        <div class="stack">
+          <label>Claude Code (/v1/messages)<select id="route-claude"></select></label>
+          <label title="Which of that provider's models to actually run. Pick one and the client's choice stops mattering — /model in Claude Code becomes cosmetic. Leave it on (client decides) to forward whatever the client asks for.">Model<select id="force-claude"></select></label>
+        </div>
+        <div class="stack">
+          <label>Codex (/v1/responses)<select id="route-codex"></select></label>
+          <label title="Which of that provider's models to actually run, regardless of what Codex asks for.">Model<select id="force-codex"></select></label>
+        </div>
+        <div class="stack">
+          <label>OpenAI (/v1/chat/completions)<select id="route-openai"></select></label>
+          <label title="Which of that provider's models to actually run, regardless of what the client asks for.">Model<select id="force-openai"></select></label>
+        </div>
+      </div>
+      <div class="panel-body" style="border-top:1px solid var(--line)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <strong style="font-size:13px">Model overrides</strong>
+          <span class="pill" id="overrideCount">0</span>
+        </div>
+        <div class="subline" style="margin-bottom:10px">Exceptions to the slot above: send one model id to a different provider, under whatever name that provider uses. This is where "give me fable from aeorlink but sonnet from Kiro" lives — and where Claude Code's background models (its subagent model and the auto-mode classifier) get pointed at a provider that can actually serve them, so auto mode keeps working while everything else runs on the slot's forced model. Pick the provider first; the model list then shows only what it serves.</div>
+        <div id="overrideList"></div>
+        <div style="display:grid;grid-template-columns:0.7fr 1.1fr 1.2fr 1.2fr auto;gap:8px;align-items:end;margin-top:10px">
+          <label>Tool
+            <select id="ovTool">
+              <option value="claude">claude</option>
+              <option value="codex">codex</option>
+              <option value="openai">openai</option>
+            </select>
+          </label>
+          <label>Provider
+            <select id="ovProvider"></select>
+          </label>
+          <label title="The id this provider serves — sent upstream.">Provider's model<select id="ovTarget"></select></label>
+          <label title="The id the client asks for. Defaults to the provider's model; change it when the client uses a different name. Use * to force all models.">Client asks for<input id="ovModel" list="ovModelList" autocomplete="off" placeholder="claude-sonnet-5"><datalist id="ovModelList"></datalist></label>
+          <button id="ovAddBtn" type="button">Add</button>
+        </div>
+        <div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap">
+          <label title="Force every model id that has no exact entry onto the provider/model chosen above." style="display:flex;align-items:center;gap:6px;flex-direction:row;font-size:13px;font-weight:400;margin:0">
+            <input type="checkbox" id="ovAll" style="min-height:auto;width:16px"> Force all models (<span class="mono">*</span>)
+          </label>
+          <label title="Keep this model id on the tool's own provider with its own id — the escape hatch from a force route." style="display:flex;align-items:center;gap:6px;flex-direction:row;font-size:13px;font-weight:400;margin:0">
+            <input type="checkbox" id="ovExempt" style="min-height:auto;width:16px"> Exempt this id from the force route
+          </label>
+        </div>
+        <div style="margin-top:12px;border-top:1px dashed var(--line);padding-top:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <strong style="font-size:13px">Model ids clients actually asked for</strong>
+            <span class="pill" id="seenCount">0</span>
+          </div>
+          <div class="subline" style="margin-bottom:8px">Read from the request log, so there is no guessing about what an agent sends — this is where Claude Code's subagent id and its auto-mode classifier id show up. Click one to load it into the form above.</div>
+          <div id="seenList"></div>
+        </div>
       </div>
     </section>
 
@@ -234,7 +282,7 @@ export function renderAdminPage() {
   </main>
 
   <script>
-    const state = { providers: [], selectedProvider: null, fetchedModels: [], activeModels: [], stats: {}, routing: {} };
+    const state = { providers: [], selectedProvider: null, fetchedModels: [], activeModels: [], stats: {}, routing: {}, modelRoutes: {}, seenModels: [] };
     const el = (id) => document.getElementById(id);
     function setNotice(msg, kind="") { const n=el("notice"); n.className="notice "+kind; n.textContent=msg; }
     function escapeHtml(v) { return String(v).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;"); }
@@ -266,16 +314,150 @@ export function renderAdminPage() {
       el("type").value=p.type; el("name").value=p.name; el("baseUrl").value=p.baseUrl; updateTypeMode();
     }
 
+    // Only provider types a route can actually serve are offered — the wrong
+    // pairing does not just fail, on the codex route it used to return an empty
+    // answer with HTTP 200.
+    function providersFor(tool) {
+      const allowed = state.routing.supportedTypes?.[tool];
+      return allowed ? state.providers.filter(p => allowed.includes(p.type)) : state.providers;
+    }
+
     function renderRouting() {
       const tools = ["claude","codex","openai"];
       for (const tool of tools) {
         const sel = el("route-"+tool);
         const current = state.routing[tool]?.id || "";
+        const usable = providersFor(tool);
         sel.innerHTML = '<option value="">(none)</option>' +
-          state.providers.map(p => '<option value="'+escapeHtml(p.id)+'"'+(p.id===current?' selected':'')+'>'+escapeHtml(p.name)+' ('+p.models.length+' models)</option>').join("");
+          usable.map(p => '<option value="'+escapeHtml(p.id)+'"'+(p.id===current?' selected':'')+'>'+escapeHtml(p.name)+' ('+p.models.length+' models)</option>').join("") +
+          // A slot already pointing at an incompatible provider must still show
+          // what it is, flagged, rather than silently reading as "(none)".
+          (current && !usable.some(p => p.id === current)
+            ? '<option value="'+escapeHtml(current)+'" selected>'+escapeHtml(state.routing[tool].name)+' ('+escapeHtml(state.routing[tool].type)+' — cannot serve this route)</option>'
+            : "");
+        renderForceModel(tool);
       }
       el("useAllBtn").disabled = !state.providers.length;
       el("fallbackToggle").checked = !!state.routing.fallbackEnabled;
+      renderOverrides();
+    }
+
+    // The slot's model dropdown IS the force route (modelRoutes[tool]["*"]).
+    // Showing it next to the provider is the whole point: pick an account, pick
+    // which of its models runs, and the client's /model choice stops mattering.
+    function renderForceModel(tool) {
+      const sel = el("force-"+tool);
+      const slot = state.providers.find(p => p.id === (state.routing[tool]?.id || ""));
+      const force = state.modelRoutes[tool]?.["*"];
+      const models = slot?.models || [];
+
+      // A force route may deliberately point at a different provider than the
+      // slot (set from Model overrides). Say so rather than showing a wrong value.
+      if (force && !force.unavailable && force.id !== slot?.id) {
+        sel.innerHTML = '<option value="">forced on '+escapeHtml(force.name||force.id)+': '+escapeHtml(force.model||"?")+'</option>';
+        sel.disabled = true;
+        return;
+      }
+      sel.disabled = !slot || !models.length;
+      const options = ['<option value="">(client decides)</option>']
+        .concat(models.map(m => '<option value="'+escapeHtml(m)+'">'+escapeHtml(m)+'</option>'));
+      sel.innerHTML = options.join("");
+      sel.value = force && force.id === slot?.id ? (force.model || "") : "";
+      if (!slot) sel.innerHTML = '<option value="">(pick a provider first)</option>';
+      else if (!models.length) sel.innerHTML = '<option value="">(no models — fetch them first)</option>';
+    }
+
+    async function forceModelChange(tool) {
+      const providerId = state.routing[tool]?.id;
+      const model = el("force-"+tool).value;
+      if (!providerId) { setNotice("Pick a provider for "+tool+" first.","bad"); return; }
+      try {
+        await api("/admin/routing/models", { method:"POST", body: JSON.stringify(
+          model ? { tool, model:"*", providerId, targetModel: model } : { tool, model:"*", providerId:null }
+        )});
+        setNotice(model
+          ? tool+": every model the client asks for now runs as "+model+" on "+(state.providers.find(p=>p.id===providerId)?.name||providerId)+"."
+          : tool+": no forced model — the client's model id is forwarded as-is.", "ok");
+        await refresh();
+      } catch(err) { setNotice(err.message,"bad"); await refresh(); }
+    }
+
+    // Per-model overrides. Rendered from /admin/routing/models, which resolves
+    // each providerId to a name and flags one whose provider is gone/disabled —
+    // that row still shows, because a silently-ignored override is worse than a
+    // visible broken one.
+    function renderOverrides() {
+      const rows = [];
+      for (const tool of ["claude","codex","openai"]) {
+        const byModel = state.modelRoutes[tool] || {};
+        for (const [modelId, p] of Object.entries(byModel)) rows.push({ tool, modelId, p });
+      }
+      el("overrideCount").textContent = rows.length ? rows.length + " active" : "none";
+      el("overrideList").innerHTML = rows.length
+        ? rows.map(r => {
+            const isForce = r.modelId === "*";
+            const label = isForce
+              ? '<span class="status active">all models</span>'
+              : '<span class="mono">'+escapeHtml(r.modelId)+'</span>';
+            let target;
+            if (r.p.exempt) {
+              target = r.p.servedBySlot
+                ? '<span class="status">exempt — stays on '+escapeHtml(r.p.slotProvider || "the tool provider")+'</span>'
+                : '<span class="status error">exempt, but '+escapeHtml(r.p.slotProvider || "the tool provider")+
+                  (r.p.strict ? ' does not serve this id — it will 404' : ' does not list this id — it may be rejected')+'</span>';
+            } else if (r.p.unavailable) {
+              target = '<span class="status error">'+escapeHtml(r.p.id || "?")+' unavailable — falls back to the tool default</span>';
+            } else {
+              const renamed = r.p.model && r.p.model !== r.modelId
+                ? ' <span class="status">as ' + escapeHtml(r.p.model) + '</span>'
+                : "";
+              target = '<strong>'+escapeHtml(r.p.name)+'</strong> <span class="status">'+escapeHtml(r.p.type)+'</span>'+renamed;
+            }
+            return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)">' +
+              '<span class="status active">'+escapeHtml(r.tool)+'</span>' + label +
+              '<span style="color:var(--muted)">&rarr;</span>' + target +
+              '<button class="danger" style="margin-left:auto" data-ov-tool="'+escapeHtml(r.tool)+'" data-ov-model="'+escapeHtml(r.modelId)+'">Remove</button>' +
+            '</div>';
+          }).join("")
+        : '<div class="empty">No overrides — every model follows the provider bound to its tool.</div>';
+
+      const provSel = el("ovProvider");
+      const curProv = provSel.value;
+      const usable = providersFor(el("ovTool").value);
+      provSel.innerHTML = usable
+        .map(p => '<option value="'+escapeHtml(p.id)+'">'+escapeHtml(p.name)+' ('+escapeHtml(p.type)+', '+(p.models?.length||0)+' models)</option>')
+        .join("");
+      if (curProv && usable.some(p => p.id === curProv)) provSel.value = curProv;
+      el("ovAddBtn").disabled = !usable.length;
+      renderOverrideTargets();
+
+      // Suggest every model id the gateway knows about, without restricting to
+      // them: a client may send an id no provider advertises.
+      const ids = new Set(state.activeModels || []);
+      for (const p of state.providers) for (const m of (p.models || [])) ids.add(m);
+      el("ovModelList").innerHTML = [...ids].sort().map(m => '<option value="'+escapeHtml(m)+'"></option>').join("");
+      renderSeenModels();
+    }
+    // The target list is the selected provider's own catalog — that is the whole
+    // point of picking the provider first: you can only send it an id it serves.
+    function renderOverrideTargets() {
+      const provider = state.providers.find(p => p.id === el("ovProvider").value);
+      const models = provider?.models || [];
+      const sel = el("ovTarget");
+      const cur = sel.value;
+      sel.innerHTML = models.length
+        ? models.map(m => '<option value="'+escapeHtml(m)+'">'+escapeHtml(m)+'</option>').join("")
+        : '<option value="">(no models configured — fetch them first)</option>';
+      if (models.includes(cur)) sel.value = cur;
+      syncOverrideClientModel();
+      updateOverrideForm();
+    }
+
+    // Client id defaults to the provider's id — the common case is identical
+    // names, and typing it twice is pointless. Anything the user typed is kept.
+    function syncOverrideClientModel() {
+      const input = el("ovModel");
+      if (!input.dataset.touched) input.value = el("ovTarget").value || "";
     }
 
     function renderProviders() {
@@ -335,10 +517,12 @@ export function renderAdminPage() {
 
     async function refresh() {
       try {
-        const [health, providers, activeModels, routing] = await Promise.all([
+        const [health, providers, activeModels, routing, modelRoutes, seenModels] = await Promise.all([
           api("/admin/health"), api("/admin/providers"), api("/admin/models"), api("/admin/routing"),
+          api("/admin/routing/models"), api("/admin/routing/seen"),
         ]);
         state.providers=providers; state.activeModels=activeModels; state.routing=routing;
+        state.modelRoutes=modelRoutes; state.seenModels=seenModels;
         el("healthDot").className="dot ok"; el("healthText").textContent=health.status;
         renderRouting(); renderProviders(); renderModels(); renderActiveModels(); renderTestModels();
       } catch(e) { el("healthDot").className="dot"; el("healthText").textContent="offline"; setNotice(e.message,"bad"); }
@@ -435,6 +619,81 @@ export function renderAdminPage() {
       } catch(err) { setNotice(err.message,"bad"); await refresh(); }
     }
 
+    // Model ids clients actually sent, straight from the request log. The point is
+    // to stop guessing which id belongs to which agent role: click one and it
+    // lands in the form, already scoped to the tool that sent it.
+    function renderSeenModels() {
+      const rows = state.seenModels || [];
+      el("seenCount").textContent = rows.length ? rows.length + " ids" : "none yet";
+      if (!rows.length) {
+        el("seenList").innerHTML = '<div class="empty">Nothing in the log yet — run a session through the gateway, then reload.</div>';
+        return;
+      }
+      el("seenList").innerHTML = rows.map(r =>
+        '<div style="display:flex;align-items:center;gap:8px;padding:4px 0">' +
+          '<span class="status active">'+escapeHtml(r.tool)+'</span>' +
+          '<span class="mono">'+escapeHtml(r.model)+'</span>' +
+          '<span class="status">'+r.count+'x</span>' +
+          (r.routed ? '<span class="status ok">routed</span>' : '') +
+          '<button style="margin-left:auto" data-seen-tool="'+escapeHtml(r.tool)+'" data-seen-model="'+escapeHtml(r.model)+'">Use</button>' +
+        '</div>').join("");
+    }
+
+    function seenAction(e) {
+      const btn = e.target.closest("button[data-seen-model]"); if (!btn) return;
+      el("ovTool").value = btn.dataset.seenTool;
+      el("ovAll").checked = false;
+      const input = el("ovModel");
+      input.value = btn.dataset.seenModel;
+      input.dataset.touched = "1";
+      updateOverrideForm();
+      setNotice("Loaded "+btn.dataset.seenModel+" — pick the provider and its model, then Add.","ok");
+    }
+
+    async function setOverride(tool, model, providerId, targetModel, exempt) {
+      try {
+        await api("/admin/routing/models",{method:"POST",body:JSON.stringify({tool,model,providerId,targetModel,exempt})});
+        const what = model === "*" ? "all models" : model;
+        setNotice(exempt
+          ? tool+" / "+what+" is now exempt — stays on the tool's provider."
+          : providerId
+            ? tool+" / "+what+" → "+(state.providers.find(p=>p.id===providerId)?.name||providerId)+(targetModel&&targetModel!==model?" as "+targetModel:"")
+            : "Override removed: "+tool+" / "+what+" now follows the tool's provider.", "ok");
+        await refresh();
+      } catch(err) { setNotice(err.message,"bad"); }
+    }
+
+    async function addOverride() {
+      const exempt = el("ovExempt").checked;
+      const target = el("ovTarget").value;
+      const model = el("ovAll").checked ? "*" : (el("ovModel").value.trim() || target);
+      if (!model) { setNotice("Pick a provider model, or type the id the client asks for.","bad"); return; }
+      if (exempt && model === "*") { setNotice("The force route cannot be exempt from itself.","bad"); return; }
+      if (!exempt && !target) { setNotice("Pick a provider model first (or fetch the provider's models).","bad"); return; }
+      await setOverride(el("ovTool").value, model, exempt ? null : (el("ovProvider").value || null), exempt ? null : target, exempt);
+      el("ovModel").value = ""; delete el("ovModel").dataset.touched;
+      el("ovAll").checked = false; el("ovExempt").checked = false;
+      updateOverrideForm();
+    }
+
+    // Exempt needs no provider/target, and a force route has no client id to type.
+    function updateOverrideForm() {
+      const exempt = el("ovExempt").checked;
+      const all = el("ovAll").checked;
+      el("ovProvider").disabled = exempt;
+      el("ovTarget").disabled = exempt;
+      el("ovModel").disabled = all;
+      el("ovAddBtn").disabled = exempt
+        ? !el("ovModel").value.trim()
+        : !(state.providers.find(p => p.id === el("ovProvider").value)?.models || []).length;
+      if (!all) syncOverrideClientModel();
+    }
+
+    function overrideAction(e) {
+      const btn = e.target.closest("button[data-ov-model]"); if (!btn) return;
+      setOverride(btn.dataset.ovTool, btn.dataset.ovModel, null);
+    }
+
     async function toggleFallback() {
       const enabled = el("fallbackToggle").checked;
       try {
@@ -490,7 +749,20 @@ export function renderAdminPage() {
     el("route-claude").addEventListener("change",()=>routingChange("claude"));
     el("route-codex").addEventListener("change",()=>routingChange("codex"));
     el("route-openai").addEventListener("change",()=>routingChange("openai"));
+    el("force-claude").addEventListener("change",()=>forceModelChange("claude"));
+    el("force-codex").addEventListener("change",()=>forceModelChange("codex"));
+    el("force-openai").addEventListener("change",()=>forceModelChange("openai"));
     el("fallbackToggle").addEventListener("change",toggleFallback);
+    el("ovAddBtn").addEventListener("click",addOverride);
+    el("overrideList").addEventListener("click",overrideAction);
+    el("seenList").addEventListener("click",seenAction);
+    el("ovProvider").addEventListener("change",renderOverrideTargets);
+    el("ovTool").addEventListener("change",renderOverrides);
+    el("ovTarget").addEventListener("change",syncOverrideClientModel);
+    el("ovModel").addEventListener("input",(e)=>{ e.target.dataset.touched="1"; updateOverrideForm(); });
+    el("ovAll").addEventListener("change",updateOverrideForm);
+    el("ovExempt").addEventListener("change",updateOverrideForm);
+    el("ovModel").addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addOverride(); } });
     el("testProvider").addEventListener("change",updateTestModelsForProvider);
     document.querySelectorAll("[data-preset]").forEach(b=>b.addEventListener("click",()=>applyPreset(b.dataset.preset)));
     updateTypeMode(); refresh();

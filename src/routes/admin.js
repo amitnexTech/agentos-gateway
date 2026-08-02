@@ -13,6 +13,10 @@ import {
   getToolProvider,
   setToolProvider,
   setAllToolsProvider,
+  getModelRoutes,
+  resolveModelRoute,
+  setModelRoute,
+  supportedTypesForTool,
   isFallbackEnabled,
   setFallbackEnabled,
   TOOL_SLOTS,
@@ -20,6 +24,7 @@ import {
   replace,
 } from "../config/keysStore.js";
 import { envSet, envGet, envDelete, envSnapshot, envReplace } from "../config/envStore.js";
+import { kiroModelCandidates } from "../kiro/client.js";
 import { getStats } from "../config/usageStore.js";
 import { supportedTypes, createAdapter } from "../registry.js";
 import { fetchModels } from "../lib/modelFetch.js";
@@ -77,7 +82,134 @@ adminRouter.get("/routing", (_req, res) => {
     detailed[tool] = provider ? { id: provider.id, name: provider.name, type: provider.type } : null;
   }
   detailed.fallbackEnabled = isFallbackEnabled();
+  // Which provider types each route can actually serve, so the dashboard offers
+  // only workable pairings instead of letting the user wire a slot that fails
+  // upstream (or worse, returns an empty answer).
+  detailed.supportedTypes = Object.fromEntries(TOOL_SLOTS.map((t) => [t, supportedTypesForTool(t)]));
   res.json(detailed);
+});
+
+// --- Per-model routes (override a tool's provider for one model id) ---
+// A tool slot sends every model to one provider. These overrides exist because
+// that is expensive: a client's cheap background model can be pinned to a cheap
+// account while the real work stays on the good one.
+// Registered before /routing/:tool so "model" is not captured as a tool param.
+
+adminRouter.get("/routing/models", (_req, res) => {
+  const routes = getModelRoutes();
+  const detailed = {};
+  for (const [tool, byModel] of Object.entries(routes)) {
+    detailed[tool] = {};
+    for (const [modelId, raw] of Object.entries(byModel)) {
+      // An exempt entry has no provider by definition — it means "leave this one
+      // on the tool's own provider", which is how a force route gets holes.
+      // Whether that provider can actually serve the id is the trap this reports:
+      // exempting an id the slot provider does not sell turns the call into a 403
+      // (measured: a router that only sells one model answered
+      // "This token has no access to model claude-sonnet-5").
+      if (raw && typeof raw === "object" && raw.exempt) {
+        detailed[tool][modelId] = { exempt: true, ...slotCoverage(tool, modelId) };
+        continue;
+      }
+      const route = resolveModelRoute(tool, modelId);
+      if (route && !route.exempt) {
+        detailed[tool][modelId] = {
+          id: route.provider.id,
+          name: route.provider.name,
+          type: route.provider.type,
+          model: route.model,
+        };
+      } else {
+        // Provider gone or disabled: still reported, so a dead override is
+        // visible instead of silently falling back to the tool default.
+        detailed[tool][modelId] = {
+          id: typeof raw === "string" ? raw : raw?.providerId || null,
+          name: null,
+          type: null,
+          model: typeof raw === "string" ? modelId : raw?.model || modelId,
+          unavailable: true,
+        };
+      }
+    }
+  }
+  res.json(detailed);
+});
+
+// Can the tool's own provider serve this model id? Kiro is strict (an id outside
+// its configured list is rejected outright), everything else is passthrough — the
+// id is forwarded even when unlisted, so an unlisted id is a warning, not a
+// verdict. Mirrors the matching in kiro/client.js lookupModelForTool.
+function slotCoverage(tool, modelId) {
+  const slot = getToolProvider(tool);
+  if (!slot) return { slotProvider: null, servedBySlot: false, strict: false };
+  const configured = getProviderModels(slot.id);
+  const strict = slot.type === "kiro";
+  const servedBySlot = strict
+    ? kiroModelCandidates(modelId).some((c) => configured.includes(c))
+    : configured.includes(modelId);
+  return { slotProvider: slot.name, servedBySlot, strict };
+}
+
+// Distinct model ids clients have actually asked for, from the request log.
+// Without this the only way to learn what an agent sends (Claude Code's subagent
+// id, its auto-mode classifier id, …) is to guess — and a wrong guess produces a
+// route that never matches anything.
+adminRouter.get("/routing/seen", (_req, res) => {
+  const routes = getModelRoutes();
+  const seen = new Map();
+  for (const entry of getLogs({ limit: 1000 })) {
+    const tool = entry.tool;
+    // logStore stores rawModel only when it differs from what was sent upstream,
+    // so the id the CLIENT asked for is rawModel ?? model.
+    const asked = entry.rawModel || entry.model;
+    if (!tool || !asked) continue;
+    const key = `${tool}|${asked}`;
+    const hit = seen.get(key) || { tool, model: asked, count: 0, lastSeen: entry.ts, routed: false };
+    hit.count++;
+    if (entry.ts > hit.lastSeen) hit.lastSeen = entry.ts;
+    seen.set(key, hit);
+  }
+  const out = [...seen.values()].map((hit) => ({
+    ...hit,
+    routed: Boolean(routes[hit.tool]?.[hit.model]),
+  }));
+  out.sort((a, b) => b.count - a.count);
+  res.json(out);
+});
+
+// POST /admin/routing/models { tool, model, providerId, targetModel, exempt }
+//   model "*"       -> force route for every model without an exact entry
+//   exempt true     -> keep this model id on the tool's own provider (the escape
+//                      hatch a force route needs for Claude Code's subagent /
+//                      auto-mode classifier models)
+//   providerId null -> clear the entry
+adminRouter.post("/routing/models", (req, res, next) => {
+  try {
+    const { tool, model, providerId, targetModel, exempt } = req.body || {};
+    if (!TOOL_SLOTS.includes(tool)) throw new ApiError(400, `tool must be one of ${TOOL_SLOTS.join(", ")}`);
+    if (!model) throw new ApiError(400, "model is required");
+    if (exempt && model === "*") throw new ApiError(400, "the force route (*) cannot be exempt from itself");
+    if (!exempt && providerId) requireProvider(providerId);
+    const route = exempt
+      ? { exempt: true }
+      : providerId
+        ? { providerId, model: targetModel || null }
+        : null;
+    const modelRoutes = setModelRoute(tool, model, route);
+    if (!modelRoutes) {
+      throw new ApiError(
+        400,
+        model === "*" && providerId
+          ? "The force route (*) needs a target model — there is no client id to fall back on"
+          : tool === "openai"
+            ? "Rejected: unknown provider, or a kiro provider on the openai slot (protocol mismatch)"
+            : "Rejected: unknown provider"
+      );
+    }
+    res.json({ ok: true, modelRoutes });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // Set ALL tools to the same provider (convenience): POST /admin/routing/all { providerId: "xxx" }
@@ -86,8 +218,16 @@ adminRouter.post("/routing/all", (req, res, next) => {
     const { providerId } = req.body || {};
     if (!providerId) throw new ApiError(400, "providerId is required");
     requireProvider(providerId);
-    const routing = setAllToolsProvider(providerId);
-    res.json({ ok: true, routing });
+    const result = setAllToolsProvider(providerId);
+    if (!result) throw new ApiError(400, "Unknown provider");
+    res.json({
+      ok: true,
+      routing: result.routing,
+      skipped: result.skipped,
+      ...(result.skipped.length
+        ? { note: `Skipped ${result.skipped.join(", ")} — this provider type cannot serve those routes.` }
+        : {}),
+    });
   } catch (err) {
     next(err);
   }
@@ -113,6 +253,15 @@ adminRouter.post("/routing/:tool", (req, res, next) => {
     const { providerId } = req.body || {};
     if (providerId) requireProvider(providerId);
     const routing = setToolProvider(tool, providerId || null);
+    if (!routing) {
+      const provider = providerId ? getProvider(providerId) : null;
+      throw new ApiError(
+        400,
+        provider
+          ? `Provider "${provider.name}" (${provider.type}) cannot serve the ${tool} route — it needs ${supportedTypesForTool(tool).join(" or ")}.`
+          : "Unknown provider"
+      );
+    }
     res.json({ ok: true, routing });
   } catch (err) {
     next(err);
