@@ -61,11 +61,11 @@ export function kiroModelCandidates(model) {
 }
 
 // Single best-guess resolution, for callers with no catalog to check against.
-// Kiro-only: never apply this to a non-Kiro provider.
-export function resolveKiroModel(model) {
-  const candidates = kiroModelCandidates(model);
-  return candidates[candidates.length - 1] || model;
-}
+// ponytail: deleted — it had no caller, and its "last candidate wins" rule was
+// wrong for the aliased ids (claude-opus-4-20250514 would resolve to
+// claude-opus-4, the very name the alias exists because Kiro does NOT serve).
+// lookupModelForTool below walks kiroModelCandidates in order against the
+// account's real catalog, which is the only correct way to pick.
 
 // Look up the provider bound to a tool for the given model id, applying Kiro
 // alias resolution only when the tool is routed to a Kiro provider.

@@ -17,6 +17,20 @@ Opt-in, default OFF. When a tool's bound provider fails with a retriable upstrea
 
 **Known gap:** no automatic multi-account rotation beyond this opt-in retry — the old Python proxy rotated accounts on every request; this gateway only moves on a failure (which now includes a Kiro account hitting its credit budget, see [[kiro-integration]]).
 
+## The test suite
+
+`npm test` runs both layers and takes a couple of seconds. No devDependencies — the runner is `node --test` and the integration checks are a plain script.
+
+| command | what it covers |
+|---|---|
+| `npm run test:unit` | 44 unit tests in `test/` over the pure logic: Kiro payload construction, the Kiro stream parser, upstream-error extraction and network-error mapping, and routing/override resolution |
+| `npm run test:bridge` | `scripts/bridge-verify.mjs` — 27 end-to-end checks through the real gateway against fake upstreams (both protocol directions, Kiro, budget enforcement, native passthrough regression) |
+| `npm test` | both, in that order |
+
+What the units deliberately target is logic that fails *silently*: a dropped system prompt or tool result reads as the model "forgetting" rather than as an error; a wrong retriable status quietly changes which account pays; an exact per-model route losing to the force route sends expensive traffic to the wrong place. Both layers were mutation-checked — deleting one line of a mapping or resolver makes specific tests fail, so they are not passing by accident.
+
+Two things they do **not** replace: a real-CLI multi-turn run (see below) and `scripts/bridge-live-probe.mjs` against a real provider. Fake upstreams agree with the gateway's assumptions by construction.
+
 ## Verifying a Codex or Claude path change
 
 A hand-written curl proves nothing here: it matches the gateway's own assumptions, so it passes even when the real CLI is broken. This is how the "Codex has no tools" bug survived a "verified live" claim. Always verify with the real CLI, and always through a **multi-turn** tool round trip (call → output fed back → answer); turn 1 alone hides dropped tool history.

@@ -250,7 +250,7 @@ Reading tools from only the old shape is what left Codex able to chat but unable
 
 - No OAuth — API key auth only
 - No build step — inline HTML dashboard
-- No external dependencies beyond express
+- No external dependencies beyond express — including tests: `node --test` plus one plain script, zero devDependencies (see [[fallback-and-verification]])
 - No cache layer — passthrough proxy
 - No provider-specific adapters beyond the 4 types — openai-compat/anthropic-compat cover the rest
 - No React dashboard

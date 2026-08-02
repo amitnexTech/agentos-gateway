@@ -18,8 +18,8 @@ export const anthropicRouter = Router();
 // Kiro provider: request is translated Anthropic→Kiro (kiro/client.js +
 // kiro/converter.js + kiro/stream.js). Other Anthropic-compat providers: the
 // request is forwarded directly via the adapter. Model-id aliasing is Kiro-only
-// (kiro/client.js resolveKiroModel); non-Kiro providers receive the raw id the
-// client sent, completely untouched.
+// (kiro/client.js lookupModelForTool + kiroModelCandidates); non-Kiro providers
+// receive the raw id the client sent, completely untouched.
 
 anthropicRouter.post("/messages", async (req, res, next) => {
   const rawModel = req.body?.model;

@@ -267,9 +267,10 @@ export function setModelRoute(tool, modelId, route) {
 // --- Auto-fallback (default OFF) ---------------------------------------
 // When the user opts in (routing.fallbackEnabled === true), a retriable
 // upstream error on a tool's bound provider retries the same request on
-// another enabled provider that speaks the SAME protocol, so the execution
-// path (executeKiro vs callUpstream + anthropicSse vs OpenAI SSE) is
-// unchanged. Default off: the user keeps clarity on which account is
+// another enabled provider allowed on that slot — across protocols, since the
+// bridge translates and the route consumes the winner's adapter. Kiro is the
+// exception: executeKiro is its own execution path, so a Kiro primary only
+// falls back onto Kiro. Default off: the user keeps clarity on which account is
 // spending. Toggle via the dashboard or POST /admin/routing/fallback.
 
 export function isFallbackEnabled() {

@@ -64,6 +64,8 @@ data/                      # Runtime data (gitignored)
 ├── .env                   # API keys (secrets)
 ├── logs.json              # Request log (last 200, survives restart)
 └── usage.json             # Usage stats
+test/                      # node --test unit tests (no devDependencies)
+scripts/                   # bridge-verify.mjs (integration), bridge-live-probe.mjs (real providers)
 ```
 
 ## Provider Types (4)
@@ -140,6 +142,7 @@ any tool at all (fixed 2026-07-29).
 npm install
 npm start         # port 9000
 npm run dev       # with --watch
+npm test          # 44 unit tests (node --test) + 27 integration checks
 ```
 
 ## Dashboard Presets
