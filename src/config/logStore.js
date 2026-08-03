@@ -5,6 +5,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "
 import { join } from "node:path";
 import { updateProvider, getProvider } from "./keysStore.js";
 import { dataDir } from "./envStore.js";
+import { appendSpend } from "./spendStore.js";
+import { requestContext } from "../lib/requestContext.js";
 
 const MAX_ENTRIES = 200;
 
@@ -152,6 +154,31 @@ export function logRequest({ tool, rawModel, model, providerId, providerName, la
   logs.unshift(entry);
   if (logs.length > MAX_ENTRIES) logs.length = MAX_ENTRIES;
   persist();
+
+  // The permanent record. This log only keeps the last 200 requests, which is a few
+  // hours of real use — every token measured before this existed was thrown away
+  // within the day. spendStore appends one line per request instead, so monthly
+  // totals per project / provider / model are answerable. Both estimated tokens and
+  // an unknown cost are carried through so a report can say what it does not know.
+  const ctx = requestContext();
+  appendSpend({
+    ts: entry.ts,
+    tool,
+    project: ctx.project || null,
+    client: ctx.client || null,
+    provider: providerName || null,
+    providerId: providerId || null,
+    model: model || null,
+    status,
+    inputTokens: usage?.input_tokens || 0,
+    outputTokens: usage?.output_tokens || 0,
+    cacheReadTokens: usage?.cache_read || 0,
+    cacheWriteTokens: usage?.cache_write || 0,
+    cost,
+    credits: entry.kiroCredits,
+    estimated: usageEstimated,
+  });
+
   return entry;
 }
 

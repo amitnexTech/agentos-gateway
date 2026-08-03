@@ -58,6 +58,7 @@ export function renderLogPage() {
         <span class="pill" id="costPill" title="Sum of the rows that have a known rate; rows priced '—' are not counted.">$0.00</span>
         <span class="pill" id="creditsPill" title="Kiro credits only">0 cr</span>
         <span class="pill" id="tokenPill">0 tokens</span>
+        <a class="pill" href="/admin/spend" title="Monthly totals by project, provider and model — this log only keeps the last 200 requests">Spend →</a>
         <select id="filterTool">
           <option value="">All tools</option>
           <option value="claude">Claude Code</option>
@@ -162,7 +163,7 @@ export function renderLogPage() {
             : '<span style="color:var(--muted)">—</span>';
           const costCell = l.cost !== null
             ? '<span class="mono"'+estTitle+'>'+est+'$'+l.cost.toFixed(4)+'</span>'
-            : '<span style="color:var(--muted)" title="No known price for this model, so no figure is shown — a rate guessed from another vendor\'s list would be worse than a blank.">—</span>';
+            : '<span style="color:var(--muted)" title="No known price for this model, so no figure is shown — a rate guessed from a different vendor would be worse than a blank.">—</span>';
           const creditsCell = l.kiroCredits ? '<span class="mono">'+l.kiroCredits.toFixed(4)+' cr</span>' : '';
           const tpsCell = l.tps != null ? '<span class="mono"'+estTitle+'>'+est+l.tps.toFixed(1)+'</span>' : '<span style="color:var(--muted)">—</span>';
           return '<tr>' +

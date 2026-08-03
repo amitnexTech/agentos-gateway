@@ -102,6 +102,7 @@ export function renderAdminPage() {
         <span class="pill"><span id="healthDot" class="dot"></span><span id="healthText">Checking</span></span>
         <button id="refreshBtn" type="button">Refresh</button>
         <a class="pill" href="/admin/logs">Logs</a>
+        <a class="pill" href="/admin/spend" title="Monthly tokens and cost by project, provider and model — the permanent record the 200-entry log cannot answer for">Spend</a>
       </div>
     </header>
 

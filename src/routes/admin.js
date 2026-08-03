@@ -33,6 +33,8 @@ import { ApiError } from "../lib/errors.js";
 import { renderAdminPage } from "./adminPage.js";
 import { getLogs, clearLogs } from "../config/logStore.js";
 import { renderLogPage } from "./logPage.js";
+import { renderSpendPage } from "./spendPage.js";
+import { getSpend } from "../config/spendStore.js";
 import { kiroAccountRouter } from "./kiroAccount.js";
 
 export const adminRouter = Router();
@@ -437,6 +439,16 @@ adminRouter.get("/logs/data", (req, res) => {
 adminRouter.delete("/logs", (_req, res) => {
   clearLogs();
   res.json({ ok: true });
+});
+
+// Spend: the permanent record the 200-entry log cannot answer for — monthly totals
+// broken down by project, provider, model, tool and client. See spendStore.js.
+adminRouter.get("/spend", (_req, res) => {
+  res.type("html").send(renderSpendPage());
+});
+
+adminRouter.get("/spend/data", (req, res) => {
+  res.json(getSpend({ month: req.query.month }));
 });
 
 

@@ -21,6 +21,7 @@ Entry point for this project's docs. Every doc should be reachable from here
 - [[codex-integration]] — Codex `/v1/responses` non-Kiro path: Responses↔Chat-Completions translation, freeform tools, synthetic SSE reconstruction
 - [[security]] — dashboard auth, loopback binding, admin token, why /v1 stays unauthenticated
 - [[cost-and-context]] — Kiro credit/token measurement, context-window visibility, model-swap detection signals
+- [[spend-tracking]] — the permanent usage record: monthly tokens and cost by project, provider and model, and how a request is attributed to a project
 - [[fallback-and-verification]] — auto-fallback design, CLI verification rules, capture-real-traffic playbook
 - [[provider-findings]] — Lumosel/Aerolink reliability and backend-switching findings
 

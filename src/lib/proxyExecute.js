@@ -111,6 +111,7 @@ export async function callUpstream({
         status: "error",
         error: mapped.message,
       });
+      mapped.logged = true; // the route's catch must not write a second entry
     }
     throw mapped;
   }
@@ -129,17 +130,20 @@ export async function callUpstream({
       status: "error",
       error: `${upstream.status}: ${detail.slice(0, 200)}`,
     });
+    // Every throw below is for a failure already in the log; the route's catch
+    // must not write a second entry for it.
+    const logged = (err) => Object.assign(err, { logged: true });
     if (upstream.status === 401 || upstream.status === 403) {
-      throw new ApiError(502, `Upstream auth error (${upstream.status}): ${detail}`, upstream.status);
+      throw logged(new ApiError(502, `Upstream auth error (${upstream.status}): ${detail}`, upstream.status));
     }
     if (upstream.status === 429) {
-      throw new ApiError(429, `Upstream rate limit (${upstream.status}): ${detail}`, upstream.status);
+      throw logged(new ApiError(429, `Upstream rate limit (${upstream.status}): ${detail}`, upstream.status));
     }
-    throw new ApiError(
+    throw logged(new ApiError(
       upstream.status >= 500 ? 502 : upstream.status,
       `Upstream error (${upstream.status}): ${detail}`,
       upstream.status
-    );
+    ));
   }
 
   recordRequest(model);

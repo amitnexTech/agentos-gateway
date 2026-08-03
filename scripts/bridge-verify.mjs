@@ -717,6 +717,75 @@ await check("credit budget is enforced on /v1/messages too (one check, every Kir
   assert.equal(received.length, 0);
 });
 
+await check("spend is recorded permanently and attributed to the right project", async () => {
+  writeConfig({ routing: { claude: "prov-oai", codex: "prov-anth", openai: "prov-anth" } });
+  const { spendPath } = await import("../src/config/spendStore.js");
+  rmSync(spendPath(), { force: true });
+
+  // Codex identifies its workspace in a header; Claude Code's system prompt carries
+  // "Working directory:". Both paths go through the AsyncLocalStorage middleware,
+  // which is the part unit tests cannot reach.
+  const codexRes = await fetch(`${base}/v1/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "user-agent": "codex_exec/0.146.0 (test)",
+      "x-codex-turn-metadata": JSON.stringify({ workspaces: { "/work/alpha": { has_changes: false } } }),
+    },
+    body: JSON.stringify({ model: "claude-sonnet-5", stream: false, input: "hi" }),
+  });
+  assert.equal(codexRes.status, 200);
+
+  const claudeRes = await post("/v1/messages", {
+    model: "gpt-5.6",
+    max_tokens: 16,
+    system: [{ type: "text", text: "<env>\nWorking directory: /work/beta\n</env>" }],
+    messages: [{ role: "user", content: "hi" }],
+  });
+  assert.equal(claudeRes.status, 200);
+
+  const auth = "Basic " + Buffer.from("any:test-token").toString("base64");
+  const spend = await (await fetch(`${base}/admin/spend/data`, { headers: { Authorization: auth } })).json();
+
+  assert.equal(spend.totals.requests, 2, "both requests must be in the permanent record");
+  assert.equal(spend.byProject["/work/alpha"].requests, 1, "Codex's workspace header must attribute the request");
+  assert.equal(spend.byProject["/work/beta"].requests, 1, "Claude Code's working directory must attribute the request");
+  assert.equal(spend.byClient["codex_exec/0.146.0"].requests, 1);
+  assert.ok(spend.byProvider["Fake Anthropic"], "provider breakdown");
+  assert.ok(spend.byModel["claude-sonnet-5"], "model breakdown");
+  assert.ok(spend.totals.totalTokens > 0, "tokens must survive into the record");
+  assert.equal(spend.months.length, 1);
+
+  // An error is recorded too — spend that failed still cost latency and sometimes money.
+  openaiScenario = "empty";
+  await post("/v1/messages", { model: "gpt-5.6", max_tokens: 16, messages: [{ role: "user", content: "hi" }] });
+  openaiScenario = "default";
+  const after = await (await fetch(`${base}/admin/spend/data`, { headers: { Authorization: auth } })).json();
+  assert.equal(after.totals.requests, 3);
+  assert.equal(after.totals.errors, 1);
+  assert.equal(after.byProject.unknown.requests, 1, "a request with nothing identifying is 'unknown', not dropped");
+});
+
+await check("every dashboard page's inline script parses", async () => {
+  // The dashboard has no build step, so nothing else would catch a syntax error in
+  // the inline JS — it would simply render a dead page. Found one this way: an
+  // unescaped apostrophe in a tooltip string broke the whole log page.
+  const pages = {
+    dashboard: (await import("../src/routes/adminPage.js")).renderAdminPage,
+    logs: (await import("../src/routes/logPage.js")).renderLogPage,
+    spend: (await import("../src/routes/spendPage.js")).renderSpendPage,
+  };
+  for (const [name, render] of Object.entries(pages)) {
+    const html = render();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    assert.ok(scripts.length, `${name} page has no inline script to check`);
+    for (const [i, src] of scripts.entries()) {
+      // new Function parses without executing, which is all that is needed here.
+      assert.doesNotThrow(() => new Function(src), `${name} page, script ${i + 1} does not parse`);
+    }
+  }
+});
+
 console.log("\nnative passthrough (no bridge) — regression check");
 
 writeFileSync(

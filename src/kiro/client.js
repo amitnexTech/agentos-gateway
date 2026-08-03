@@ -141,6 +141,7 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, ki
       providerId: provider.id, providerName: provider.name,
       latencyMs: 0, status: "error", error: err.message,
     });
+    err.logged = true; // already in the log; the route's catch must not repeat it
     throw err;
   }
 
@@ -174,6 +175,7 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, ki
         status: "error",
         error: mapped.message,
       });
+      mapped.logged = true;
     }
     throw mapped;
   }
@@ -192,16 +194,18 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, ki
       status: "error",
       error: `${upstream.status}: ${detail.slice(0, 200)}`,
     });
+    // Both throws are for a failure already written to the log.
+    const logged = (e) => Object.assign(e, { logged: true });
     if (upstream.status === 403) {
-      throw new ApiError(
+      throw logged(new ApiError(
         502,
         `Kiro rejected the API key (403). Check the key is still valid in the Kiro portal: ${detail.slice(0, 200)}`
-      );
+      ));
     }
-    throw new ApiError(
+    throw logged(new ApiError(
       upstream.status >= 500 ? 502 : upstream.status,
       `Kiro API error (${upstream.status}): ${detail.slice(0, 200)}`
-    );
+    ));
   }
 
   recordRequest(model);

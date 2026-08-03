@@ -10,6 +10,7 @@ Codex       ─→ localhost:9000/v1/responses   (OpenAI Responses)  ─→ rout
 Any OpenAI  ─→ localhost:9000/v1/chat/completions (OpenAI Chat)  ─→ routing["openai"] provider
 Dashboard   ─→ localhost:9000/admin
 Logs        ─→ localhost:9000/admin/logs
+Spend       ─→ localhost:9000/admin/spend        (monthly tokens + cost by project)
 ```
 
 Each tool can use a different provider — or all the same. Switch in dashboard dropdown, no restart.
@@ -25,6 +26,7 @@ src/
 │   ├── admin.js           # Dashboard API + routing + provider CRUD
 │   ├── adminPage.js       # Dashboard HTML (inline, no build step)
 │   ├── logPage.js         # Request log page HTML
+│   ├── spendPage.js       # Spend page HTML (monthly tokens/cost by project, provider, model)
 │   ├── kiroAccount.js     # Kiro account CRUD (Kiro-specific façade over providers)
 │   ├── proxy.js           # /v1/chat/completions (OpenAI Chat) — protocol glue
 │   ├── anthropic.js       # /v1/messages (Claude Code) — protocol glue only
@@ -40,7 +42,8 @@ src/
 ├── config/
 │   ├── keysStore.js       # Provider + model + routing registry (keys.json)
 │   ├── envStore.js        # Secrets store (data/.env)
-│   ├── usageStore.js      # Request/token tracking
+│   ├── usageStore.js      # Per-model request/error counters
+│   ├── spendStore.js      # Permanent spend record (spend.jsonl) — monthly totals by project/provider/model
 │   └── logStore.js        # Request log (last 200, persisted to logs.json)
 ├── adapters/
 │   ├── base.js            # Abstract adapter
@@ -51,6 +54,7 @@ src/
 │   └── kiro.js            # Kiro adapter (URLs/headers; protocol handled by kiro/)
 ├── lib/
 │   ├── proxyExecute.js    # Shared upstream fetch + timeout + error map + SSE headers + JSON read
+│   ├── requestContext.js  # Per-request project/client attribution (AsyncLocalStorage)
 │   ├── protocolBridge.js  # OpenAI Chat <-> Anthropic Messages translation, both directions + streaming
 │   ├── anthropicSse.js    # Anthropic SSE parser/passthrough + model/usage extraction
 │   ├── stream.js          # Generic OpenAI SSE stream piping
@@ -63,6 +67,7 @@ data/                      # Runtime data (gitignored)
 ├── keys.json              # Provider + routing config
 ├── .env                   # API keys (secrets)
 ├── logs.json              # Request log (last 200, survives restart)
+├── spend.jsonl            # Permanent spend record, one line per request (append-only)
 └── usage.json             # Usage stats
 test/                      # node --test unit tests (no devDependencies)
 scripts/                   # bridge-verify.mjs (integration), bridge-live-probe.mjs (real providers), dump-proxy.mjs (capture CLI traffic)
@@ -140,6 +145,7 @@ class: the model looks uncooperative instead of the request looking broken.
 10. **Enable/Disable** — per-provider toggle, disabled providers don't route
 11. **Manual model add** — when /models endpoint fails, add models manually
 12. **Request logs** — live log page with latency, tokens, cost, model verification
+13. **Spend tracking** — permanent append-only record (`data/spend.jsonl`, written from `logRequest`), monthly totals by project / provider / model / tool / client at `/admin/spend`; project attribution from Codex's workspace metadata, Claude Code's working directory, or an `x-agentos-project` header
 
 ## Running
 

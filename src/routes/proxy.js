@@ -41,6 +41,7 @@ proxyRouter.post("/chat/completions", async (req, res, next) => {
   const stream = Boolean(req.body?.stream);
   // Declared out here so the catch block can still name the model it failed on.
   let provider, model = rawModel;
+  const requestStart = Date.now(); // for the error path: a failed request still took time
 
   try {
     if (!rawModel) throw new ApiError(400, "Missing 'model' in request body");
@@ -172,6 +173,18 @@ proxyRouter.post("/chat/completions", async (req, res, next) => {
     res.json(responseJson);
   } catch (err) {
     if (model && !(err instanceof ApiError)) recordError(model);
+    // A failure that happened AFTER the upstream call — an unusable reply, a body
+    // that is not JSON, a translation that cannot be done honestly — used to be
+    // logged nowhere: the request cost an upstream call (and sometimes money) and
+    // left no trace in the log or the spend record. Lower layers set `logged` on
+    // the errors they have already written, so this never double-counts.
+    if (!err.logged) {
+      logRequest({
+        tool: "openai", rawModel, model,
+        providerId: provider?.id, providerName: provider?.name,
+        latencyMs: Date.now() - requestStart, status: "error", error: err.message,
+      });
+    }
     if (err.name === "AbortError") return next(new ApiError(504, "Upstream timeout"));
     if (res.headersSent) {
       res.write(`data: ${JSON.stringify({ error: { message: err.message } })}\n\n`);

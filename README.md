@@ -10,6 +10,7 @@ A unified AI API gateway that routes Claude Code, Codex, and any OpenAI/Anthropi
 - **Model verification** — detects if a provider responds with a different model than requested
 - **Token & cost tracking** — input/output/cache tokens with estimated cost per request
 - **Live request logs** — see every request's provider, model, latency, tokens in real-time
+- **Spend tracking** — permanent monthly totals by project, provider and model, so "what did this month cost and where did it go" is answerable
 - **Dashboard** — browser UI for adding providers, configuring models, switching routes
 - **Auto /v1 detection** — paste a base URL without /v1, gateway figures it out
 - **Zero config files** — everything managed through the dashboard, no YAML/JSON editing
