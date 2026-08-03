@@ -225,9 +225,9 @@ Codex CLI ≥ 0.145 does **not** send `tools` or `instructions` at the top level
 
 - tools arrive as an input item `{type:"additional_tools", role:"developer", tools:[…]}`
 - the system prompt, `AGENTS.md`, and hook output arrive as `role:"developer"` message items
-- tool types include `custom` (freeform text input, e.g. `exec` — the code-mode tool that reaches shell and every MCP tool), `function`, and `namespace` (sub-agent orchestration)
+- tool types include `custom` (freeform text input, e.g. `exec` — the code-mode tool that reaches shell and every MCP tool), `function`, and `namespace` (a GROUP of tools: every configured MCP server, plus `multi_agent_v1` for sub-agents)
 
-`kiro/codexConverter.js` reads both wire shapes (`collectCodexTools`), folds developer/system turns into user turns, and merges same-role neighbours. Freeform tools are advertised to Kiro as `{ input: string }` because Kiro's `toolSpecification` requires a JSON schema, then unwrapped on the way back into a `custom_tool_call` item with raw text. `namespace` tools (sub-agent orchestration: `spawn_agent`, `list_agents`, `followup_task`, `send_message`, `interrupt_agent`, `wait_agent`) are still deliberately skipped — Codex resolves those through an item type the gateway does not emit, so sub-agent spawning is unavailable through the gateway. This is an open item; see [[fallback-and-verification]] for the capture playbook needed to close it.
+`kiro/codexConverter.js` reads both wire shapes (`collectCodexTools`), folds developer/system turns into user turns, and merges same-role neighbours. Freeform tools are advertised to Kiro as `{ input: string }` because Kiro's `toolSpecification` requires a JSON schema, then unwrapped on the way back into a `custom_tool_call` item with raw text. `namespace` tools are **hoisted** into the flat tool list and the reply restores `{namespace, name}` on the `function_call` item — see [[codex-integration]] for the shape, the naming rule and the per-turn cost. Skipping the type, as the converter did until 2026-08-03, stripped every MCP tool from the request.
 
 Reading tools from only the old shape is what left Codex able to chat but unable to call any tool at all (fixed 2026-07-29, see [[fallback-and-verification]] for the verification lesson this produced).
 

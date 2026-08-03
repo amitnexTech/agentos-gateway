@@ -58,6 +58,28 @@ function sse(eventType, data) {
   return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+// Build the Codex output item for one finished tool call. A tool that came from a
+// namespace (every MCP server, plus multi_agent_v1) must be answered with the
+// namespace restored and its ORIGINAL name — the flat name it was advertised to Kiro
+// under is a gateway detail, and Codex routes the call by { namespace, name }.
+// ponytail: no namespaced *freeform* tool has been observed, so `namespace` is only
+// attached to function_call items, the shape that was actually captured.
+function toolCallItem({ itemId, callId, name, freeform, namespaced, args, rawInput, status }) {
+  if (freeform) {
+    return { type: "custom_tool_call", id: itemId, call_id: callId, name, input: rawInput, status };
+  }
+  const ns = namespaced?.get(name);
+  return {
+    type: "function_call",
+    id: itemId,
+    call_id: callId,
+    name: ns ? ns.name : name,
+    ...(ns ? { namespace: ns.namespace } : {}),
+    arguments: args,
+    status,
+  };
+}
+
 /**
  * Collect full Kiro response → Codex Responses-API JSON object.
  *
@@ -65,10 +87,12 @@ function sse(eventType, data) {
  * @param {string} model - resolved model id
  * @param {string} responseId - the resp_ id to attach
  * @param {Set<string>} [freeform] - names of freeform ("custom") Codex tools
+ * @param {Map<string, {namespace: string, name: string}>} [namespaced] - flat tool name
+ *   → its namespace and original name (see collectCodexTools)
  * @returns {object} { response, credits, contextUsagePercent, outputTokens }
  *   where `response` is the Responses-format object.
  */
-export async function collectKiroAsCodex(body, model, responseId, freeform = new Set()) {
+export async function collectKiroAsCodex(body, model, responseId, freeform = new Set(), namespaced = new Map()) {
   let buffer = "";
   let fullContent = "";
   const toolCalls = []; // { id, toolUseId, name, inputStr }
@@ -152,23 +176,18 @@ export async function collectKiroAsCodex(body, model, responseId, freeform = new
   // Build Responses output items: tool calls first, then the text message.
   const output = [];
   for (const tc of unique) {
-    output.push(freeform.has(tc.name)
-      ? {
-          type: "custom_tool_call",
-          id: tc.id,
-          call_id: tc.toolUseId,
-          name: tc.name,
-          input: unwrapFreeform(tc.inputStr),
-          status: "completed",
-        }
-      : {
-          type: "function_call",
-          id: tc.id,
-          call_id: tc.toolUseId,
-          name: tc.name,
-          arguments: toArgsString(tc.inputStr),
-          status: "completed",
-        });
+    output.push(
+      toolCallItem({
+        itemId: tc.id,
+        callId: tc.toolUseId,
+        name: tc.name,
+        freeform: freeform.has(tc.name),
+        namespaced,
+        args: toArgsString(tc.inputStr),
+        rawInput: unwrapFreeform(tc.inputStr),
+        status: "completed",
+      })
+    );
   }
   if (fullContent) {
     output.push({
@@ -209,9 +228,11 @@ export async function collectKiroAsCodex(body, model, responseId, freeform = new
  * @param {Set<string>} [freeform] - names of freeform ("custom") Codex tools; these are
  *   emitted as `custom_tool_call` items with a raw string `input`
  * @param {number} [inputTokens] - measured prompt size, reported in the final usage
+ * @param {Map<string, {namespace: string, name: string}>} [namespaced] - flat tool name
+ *   → its namespace and original name (see collectCodexTools)
  * @returns {object} { credits, contextUsagePercent, outputTokens }
  */
-export async function streamKiroToCodex(body, res, model, responseId, freeform = new Set(), inputTokens = 0) {
+export async function streamKiroToCodex(body, res, model, responseId, freeform = new Set(), inputTokens = 0, namespaced = new Map()) {
   let buffer = "";
   let kiroCredits = 0;
   let contextUsagePercent = 0;
@@ -273,7 +294,10 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
     if (currentTool.isFreeform) {
       // Freeform tool: Codex wants a custom_tool_call item carrying raw text.
       const raw = unwrapFreeform(currentTool.inputStr || "");
-      const item = { type: "custom_tool_call", id: currentTool.itemId, call_id: currentTool.callId, name: currentTool.name, input: raw, status: "completed" };
+      const item = toolCallItem({
+        itemId: currentTool.itemId, callId: currentTool.callId, name: currentTool.name,
+        freeform: true, namespaced, rawInput: raw, status: "completed",
+      });
       res.write(sse("response.custom_tool_call_input.delta", {
         type: "response.custom_tool_call_input.delta", output_index: outputIdx, item_id: currentTool.itemId, delta: raw,
       }));
@@ -291,7 +315,10 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
         type: "response.function_call_arguments.delta", output_index: outputIdx, item_id: currentTool.itemId, delta: args,
       }));
     }
-    const item = { type: "function_call", id: currentTool.itemId, call_id: currentTool.callId, name: currentTool.name, arguments: args, status: "completed" };
+    const item = toolCallItem({
+      itemId: currentTool.itemId, callId: currentTool.callId, name: currentTool.name,
+      freeform: false, namespaced, args, status: "completed",
+    });
     res.write(sse("response.function_call_arguments.done", {
       type: "response.function_call_arguments.done", output_index: outputIdx, item_id: currentTool.itemId, arguments: args,
     }));
@@ -362,9 +389,11 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
         }
         res.write(sse("response.output_item.added", {
           type: "response.output_item.added", output_index: outputIdx,
-          item: currentTool.isFreeform
-            ? { type: "custom_tool_call", id: currentTool.itemId, call_id: currentTool.callId, name, input: "", status: "in_progress" }
-            : { type: "function_call", id: currentTool.itemId, call_id: currentTool.callId, name, arguments: "", status: "in_progress" },
+          item: toolCallItem({
+            itemId: currentTool.itemId, callId: currentTool.callId, name,
+            freeform: currentTool.isFreeform, namespaced,
+            args: "", rawInput: "", status: "in_progress",
+          }),
         }));
         if (ev.data.stop) finalizeTool();
       } else if (ev.type === "tool_input") {

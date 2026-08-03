@@ -41,7 +41,16 @@ To see what a CLI actually sends, put a transparent dump proxy in front of the g
 codex exec --skip-git-repo-check -c 'model_providers.kiro-codex.base_url="http://localhost:9010/v1"' "<prompt>"
 ```
 
-Start such helpers with `setsid nohup … &`; a plain `&` from an agent tool call dies with the call. To confirm which SSE event names / item types a CLI accepts, read them out of its binary instead of guessing:
+Start such helpers with `setsid nohup … &`; a plain `&` from an agent tool call dies with the call. `scripts/dump-proxy.mjs` is that helper, kept because this capture step keeps being needed:
+
+```bash
+PORT=9010 TARGET=http://127.0.0.1:9004 OUT=/tmp/capture \
+  setsid nohup node scripts/dump-proxy.mjs &
+```
+
+It writes each request body to `OUT/NNN-<path>.request.json` and the streamed reply beside it, so both directions of a real CLI turn can be read afterwards. This is how the namespace-tool shape in [[codex-integration]] was found: `codex features list` names the flags (`multi_agent`, `code_mode`, …), but only the capture shows what actually goes on the wire.
+
+To confirm which SSE event names / item types a CLI accepts, read them out of its binary instead of guessing:
 
 ```
 strings -n 10 <codex-binary> | grep -oE "response\.[a-z_.]+" | sort -u

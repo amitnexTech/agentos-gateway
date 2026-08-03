@@ -43,12 +43,22 @@ function parseArgs(argumentsStr) {
 // a later toolResult to its call.
 // A custom_tool_call carries freeform text in `input`; it is re-wrapped as { input }
 // to match the schema the tool was advertised with (FREEFORM_SCHEMA).
-function functionCallsToToolUses(items) {
+// `advertisedFor` maps a namespaced call (namespace + name, e.g. mcp__trailmem +
+// trailmem_query) back to the flat name the tool was advertised to Kiro under, so a
+// tool call replayed from history still matches a tool in the payload's tool list.
+function functionCallsToToolUses(items, advertisedFor) {
   return items.map((it) => ({
-    name: it.name || "",
+    name: advertisedName(it, advertisedFor),
     input: it.type === "custom_tool_call" ? { input: it.input ?? "" } : parseArgs(it.arguments),
     toolUseId: it.call_id || "",
   }));
+}
+
+function advertisedName(item, advertisedFor) {
+  if (item.namespace && advertisedFor) {
+    return advertisedFor.get(`${item.namespace}\u0000${item.name}`) || item.name || "";
+  }
+  return item.name || "";
 }
 
 // Build the Kiro-format toolResults for one or more function_call_output /
@@ -81,38 +91,77 @@ const FREEFORM_SCHEMA = {
   required: ["input"],
 };
 
+// Kiro's toolSpecification names are capped; keep flattened namespace names inside it.
+const MAX_TOOL_NAME = 64;
+
+// Pick the name a tool is advertised to Kiro under. The bare name is preferred —
+// it is what the model reads when choosing a tool, and in real Codex traffic
+// (measured 2026-08-03: 64 tools across 8 namespaces) nothing collides. On a
+// collision the namespace disambiguates; the tail is kept when that overflows,
+// because the tool's own name is the informative part.
+function uniqueToolName(name, namespace, taken) {
+  let candidate = taken.has(name) && namespace ? `${namespace}__${name}` : name;
+  if (candidate.length > MAX_TOOL_NAME) candidate = candidate.slice(-MAX_TOOL_NAME);
+  let n = 2;
+  while (taken.has(candidate)) {
+    const suffix = `_${n++}`;
+    candidate = candidate.slice(0, MAX_TOOL_NAME - suffix.length) + suffix;
+  }
+  return candidate;
+}
+
 /**
  * Collect Codex tool definitions from a /v1/responses body, from both wire shapes,
  * and convert them to the Anthropic shape buildKiroConversation expects.
  *
  * @param {object} reqBody - Codex /v1/responses body
- * @returns {{tools: object[], freeform: Set<string>}} `freeform` names the tools that
- *   must be answered with a `custom_tool_call` item instead of a `function_call`.
+ * @returns {{tools: object[], freeform: Set<string>, namespaced: Map<string, {namespace: string, name: string}>}}
+ *   `freeform` names the tools that must be answered with a `custom_tool_call` item
+ *   instead of a `function_call`; `namespaced` maps the flat name a tool was
+ *   advertised under back to its namespace + original name, which the reply has to
+ *   carry or Codex cannot route the call.
  */
 export function collectCodexTools(reqBody) {
   const tools = [];
   const freeform = new Set();
+  const namespaced = new Map();
+  const taken = new Set();
 
-  const add = (t) => {
+  const add = (t, namespace = null) => {
     if (!t || typeof t !== "object" || !t.name) return;
     const type = t.type || "function";
+
+    if (type === "namespace") {
+      // A namespace groups one provider's tools. This is NOT only sub-agent
+      // orchestration: EVERY MCP server arrives this way (mcp__trailmem,
+      // mcp__graphify, …), and so do Codex's own app tools. Skipping the type, as
+      // this converter used to, silently stripped every MCP tool from the request —
+      // the model was told it had no tools at all. Kiro's tool list is flat, so the
+      // inner tools are hoisted and the namespace is restored on the way back.
+      for (const inner of t.tools || []) add(inner, t.name);
+      return;
+    }
+    if (type !== "function" && type !== "custom") return;
+    // Skipped: `web_search` (no name, no Kiro equivalent) and any future type.
+
+    const advertised = uniqueToolName(t.name, namespace, taken);
+    taken.add(advertised);
+    if (namespace) namespaced.set(advertised, { namespace, name: t.name });
+
     if (type === "function") {
       tools.push({
-        name: t.name,
+        name: advertised,
         description: t.description || `Tool: ${t.name}`,
         input_schema: t.parameters || { type: "object", properties: {} },
       });
-    } else if (type === "custom") {
-      freeform.add(t.name);
+    } else {
+      freeform.add(advertised);
       tools.push({
-        name: t.name,
+        name: advertised,
         description: `${t.description || `Tool: ${t.name}`}\n\nCall this tool with a single JSON field "input" whose value is the raw tool input as a plain string.`,
         input_schema: FREEFORM_SCHEMA,
       });
     }
-    // "namespace" (sub-agent orchestration) and built-ins like web_search /
-    // local_shell are skipped: Kiro has no equivalent, and Codex resolves a
-    // namespaced call by a dedicated item type we do not emit.
   };
 
   for (const t of reqBody?.tools || []) add(t);
@@ -121,7 +170,7 @@ export function collectCodexTools(reqBody) {
       if (item?.type === "additional_tools") for (const t of item.tools || []) add(t);
     }
   }
-  return { tools, freeform };
+  return { tools, freeform, namespaced };
 }
 
 // Stable conversation id from the first input item (mirrors generateConversationId).
@@ -145,7 +194,13 @@ function codexConversationId(input) {
 export function codexToKiro(reqBody, model) {
   const { input, instructions } = reqBody;
   const systemPrompt = instructions || "";
-  const { tools } = collectCodexTools(reqBody);
+  const { tools, namespaced } = collectCodexTools(reqBody);
+  // Reverse of `namespaced`: a call replayed from history carries { namespace, name },
+  // and Kiro must see the flat name the tool was advertised under.
+  const advertisedFor = new Map();
+  for (const [advertised, { namespace, name }] of namespaced) {
+    advertisedFor.set(`${namespace}\u0000${name}`, advertised);
+  }
 
   // Normalize Codex `input` (string | array of items) into alternating
   // user/assistant turns. Consecutive same-role items (e.g. several tool_result
@@ -158,7 +213,7 @@ export function codexToKiro(reqBody, model) {
     let pendingUserOutputs = [];
     const flushAssistant = () => {
       if (pendingAssistantCalls.length) {
-        rawTurns.push({ role: "assistant", text: "", toolUses: functionCallsToToolUses(pendingAssistantCalls), toolResults: [] });
+        rawTurns.push({ role: "assistant", text: "", toolUses: functionCallsToToolUses(pendingAssistantCalls, advertisedFor), toolResults: [] });
         pendingAssistantCalls = [];
       }
     };

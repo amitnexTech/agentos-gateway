@@ -65,7 +65,7 @@ data/                      # Runtime data (gitignored)
 ├── logs.json              # Request log (last 200, survives restart)
 └── usage.json             # Usage stats
 test/                      # node --test unit tests (no devDependencies)
-scripts/                   # bridge-verify.mjs (integration), bridge-live-probe.mjs (real providers)
+scripts/                   # bridge-verify.mjs (integration), bridge-live-probe.mjs (real providers), dump-proxy.mjs (capture CLI traffic)
 ```
 
 ## Provider Types (4)
@@ -109,17 +109,22 @@ Codex CLI ≥ 0.145 does **not** send `tools` or `instructions` at the top level
 - tools arrive as an input item `{type:"additional_tools", role:"developer", tools:[…]}`
 - the system prompt, `AGENTS.md` and hook output arrive as `role:"developer"` message items
 - tool types include `custom` (freeform text input, e.g. `exec` — the code-mode tool that
-  reaches shell and every MCP tool), `function`, and `namespace` (sub-agent orchestration)
+  reaches shell and every MCP tool), `function`, and `namespace` (a GROUP of tools)
 
 `kiro/codexConverter.js` reads both wire shapes (`collectCodexTools`), folds
 developer/system turns into user turns and merges same-role neighbours. Freeform tools
 are advertised to Kiro as `{ input: string }` because Kiro's `toolSpecification` requires
 a JSON schema, then unwrapped on the way back into a `custom_tool_call` item with raw
-text. `namespace` tools are skipped — Codex resolves those through an item type the
-gateway does not emit, so sub-agent spawning is unavailable through the gateway.
+text.
 
-Reading tools from only the old shape is what left Codex able to chat but unable to call
-any tool at all (fixed 2026-07-29).
+`namespace` tools are HOISTED into the flat tool list, and the reply restores
+`{namespace, name}` on the `function_call` item. This matters far beyond sub-agents:
+every configured MCP server arrives as a namespace (`mcp__trailmem`, `mcp__graphify`, …)
+alongside `multi_agent_v1`. Skipping the type — which the converter did until
+2026-08-03 — stripped every MCP tool from the request, so the model was told it had no
+MCP tools at all. Reading tools from only the old wire shape is what left Codex able to
+chat but unable to call any tool at all (fixed 2026-07-29). Both are the same failure
+class: the model looks uncooperative instead of the request looking broken.
 
 ## Key Features
 

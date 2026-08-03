@@ -381,6 +381,39 @@ await check("responses (Codex): anthropic-compat provider now serves /v1/respons
   assert.equal(body.usage.input_tokens, 160);
 });
 
+await check("responses (Codex): a namespaced tool is hoisted for the provider and answered with its namespace", async () => {
+  // Every MCP server reaches Codex as a `namespace` tool. The provider gets a flat
+  // tool list; the reply has to carry { namespace, name } or Codex cannot route it.
+  const res = await post("/v1/responses", {
+    model: "claude-sonnet-5",
+    stream: false,
+    input: [
+      { type: "message", role: "user", content: "weather?" },
+      {
+        type: "additional_tools",
+        role: "developer",
+        tools: [
+          {
+            type: "namespace",
+            name: "mcp__weather",
+            description: "Weather tools.",
+            tools: [{ type: "function", name: "get_weather", description: "w", parameters: { type: "object", properties: { city: { type: "string" } } } }],
+          },
+        ],
+      },
+    ],
+  });
+  assert.equal(res.status, 200);
+
+  const sent = received.at(-1);
+  assert.deepEqual(sent.body.tools.map((t) => t.name), ["get_weather"], "the provider sees a flat tool list");
+
+  const body = await res.json();
+  const call = body.output.find((i) => i.type === "function_call");
+  assert.equal(call.name, "get_weather", "the tool's own name, not the flattened one");
+  assert.equal(call.namespace, "mcp__weather", "the namespace must be restored");
+});
+
 console.log("\ndirection 2 — Claude Code -> openai-compat provider");
 
 await check("messages: request is translated to Chat Completions", async () => {

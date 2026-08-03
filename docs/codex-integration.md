@@ -37,6 +37,34 @@ For the standard-provider path, `chatTools` is built by mapping each Codex tool 
 
 `unwrapFreeformArgs()` reverses the wrapping: if the upstream (thinking it's a normal function call) returns JSON-encoded `arguments` for a freeform tool, this pulls the raw string back out (`{input: "..."}` → `"..."`, or passes a bare string through as-is).
 
+## Namespace tools: every MCP server, and sub-agents
+
+Codex declares a *group* of tools as one entry of `type: "namespace"`:
+
+```json
+{ "type": "namespace", "name": "mcp__graphify", "description": "…",
+  "tools": [ { "type": "function", "name": "graph_stats", "parameters": { … } }, … ] }
+```
+
+**This is not just sub-agent orchestration.** Captured from real Codex 0.146 traffic on 2026-08-03, one turn declared eight namespaces: `multi_agent_v1` (`spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `close_agent`) **and every configured MCP server** — `mcp__trailmem`, `mcp__know_hub`, `mcp__graphify`, plus four `mcp__codex_apps__*` groups. The converter used to skip the whole type, which silently stripped **all 55 MCP tools** from the request: the model was told it had no MCP tools at all, and Codex's sub-agent tools were invisible. It reads as the model refusing to use tools, not as an error — the same failure class as [[fallback-and-verification]]'s blank-reply bug.
+
+Neither Kiro nor Chat Completions has nested tools, so `collectCodexTools` **hoists** the inner tools into the flat list and returns a `namespaced` map (flat name → `{namespace, name}`):
+
+- The advertised name is the tool's **bare** name — that is what the model reads when choosing, and in the measured traffic none of the 64 flattened names collided. On a collision the namespace prefixes it (`mcp__docs__search`); anything past Kiro's 64-character cap keeps the tail, since the tool's own name is the informative part.
+- On the way back, a call to a hoisted tool must be answered with the **namespace restored and the original name** — Codex routes by `{namespace, name}`, not by the flat name:
+
+```json
+{ "type": "function_call", "call_id": "…", "name": "graph_stats",
+  "namespace": "mcp__graphify", "arguments": "{\"project_path\":\"…\"}" }
+```
+
+  This applies to all three emitters: `streamKiroToCodex`, `collectKiroAsCodex` (via `toolCallItem()`), and the standard path's `generateSSE()` / `chatToResponsesFormat()`.
+- On the **next** turn Codex echoes that item back in `input`, still carrying `namespace`. `codexToKiro` maps it through the reverse of the same map, because Kiro rejects a `toolUse` whose name is not in the request's tool list.
+
+Verified end to end with the real CLI (2026-08-03, Kiro `claude-sonnet-4.5`): `mcp: graphify/graph_stats started → (completed)` with the correct answer, and `collab: SpawnAgent → collab: Wait` with the sub-agent's reply coming back. A `web_search` tool has no name and no Kiro equivalent, so it is still skipped.
+
+**Cost note.** Those namespace definitions are large: 55 KB of JSON, ~13.7k tokens, re-sent on **every** turn, which measured 18% of the context window and ~0.16 credits for a single tool-calling turn on Kiro. Since input is what Kiro bills (see [[cost-and-context]]), the lever is Codex's own config — fewer MCP servers enabled means a smaller tool list. The gateway does not filter them: dropping a tool the client declared is what caused this bug in the first place.
+
 ## The upstream call itself: always non-streaming
 
 ```js

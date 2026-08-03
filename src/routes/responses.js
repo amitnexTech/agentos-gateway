@@ -81,7 +81,7 @@ function inputToMessages(input, instructions) {
 }
 
 // Convert chat response to Responses format
-function chatToResponsesFormat(chatResp, model, responseId, freeform = new Set()) {
+function chatToResponsesFormat(chatResp, model, responseId, freeform = new Set(), namespaced = new Map()) {
   const output = [];
   const choice = chatResp.choices?.[0] || {};
   const message = choice.message || {};
@@ -90,12 +90,17 @@ function chatToResponsesFormat(chatResp, model, responseId, freeform = new Set()
   if (message.tool_calls?.length) {
     for (const tc of message.tool_calls) {
       const callId = tc.id || `call_${randomUUID().slice(0, 8)}`;
-      output.push(freeform.has(tc.function.name)
+      const flatName = tc.function.name;
+      // A tool hoisted out of a namespace (every MCP server, plus multi_agent_v1)
+      // has to be answered with its namespace and original name — Codex routes the
+      // call by that pair, not by the flat name the upstream was given.
+      const ns = namespaced.get(flatName);
+      output.push(freeform.has(flatName)
         ? {
             type: "custom_tool_call",
             id: `fc_${randomUUID().slice(0, 12)}`,
             call_id: callId,
-            name: tc.function.name,
+            name: flatName,
             input: unwrapFreeformArgs(tc.function.arguments),
             status: "completed",
           }
@@ -103,7 +108,8 @@ function chatToResponsesFormat(chatResp, model, responseId, freeform = new Set()
             type: "function_call",
             id: `fc_${randomUUID().slice(0, 12)}`,
             call_id: callId,
-            name: tc.function.name,
+            name: ns ? ns.name : flatName,
+            ...(ns ? { namespace: ns.namespace } : {}),
             arguments: tc.function.arguments,
             status: "completed",
           });
@@ -159,7 +165,7 @@ function unwrapFreeformArgs(argumentsStr) {
 }
 
 // Generate SSE events for streaming
-function generateSSE(chatResp, model, responseId, freeform = new Set()) {
+function generateSSE(chatResp, model, responseId, freeform = new Set(), namespaced = new Map()) {
   const events = [];
   const choice = chatResp.choices?.[0] || {};
   const message = choice.message || {};
@@ -201,10 +207,19 @@ function generateSSE(chatResp, model, responseId, freeform = new Set()) {
     }
 
     const args = tc.function.arguments;
+    // Restore the namespace a hoisted tool came from (see collectCodexTools); Codex
+    // routes the call by { namespace, name }, not by the flat upstream name.
+    const ns = namespaced.get(tc.function.name);
+    const fnItem = (argsValue, status) => ({
+      type: "function_call", id: itemId, call_id: callId,
+      name: ns ? ns.name : tc.function.name,
+      ...(ns ? { namespace: ns.namespace } : {}),
+      arguments: argsValue, status,
+    });
 
     events.push(`event: response.output_item.added\ndata: ${JSON.stringify({
       type: "response.output_item.added", output_index: outputIdx,
-      item: { type: "function_call", id: itemId, call_id: callId, name: tc.function.name, arguments: "", status: "in_progress" },
+      item: fnItem("", "in_progress"),
     })}\n\n`);
 
     events.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({
@@ -217,7 +232,7 @@ function generateSSE(chatResp, model, responseId, freeform = new Set()) {
 
     events.push(`event: response.output_item.done\ndata: ${JSON.stringify({
       type: "response.output_item.done", output_index: outputIdx,
-      item: { type: "function_call", id: itemId, call_id: callId, name: tc.function.name, arguments: args, status: "completed" },
+      item: fnItem(args, "completed"),
     })}\n\n`);
 
     outputIdx++;
@@ -301,8 +316,10 @@ responsesRouter.post("/responses", async (req, res, next) => {
       // Kiro reports no input token count, but input IS the cost there (full
       // history is re-sent every turn). Measure what we send so the log shows it.
       const { inputTokens, historyEntries, payloadChars } = measureKiroPayload(kiroPayload);
-      // Freeform ("custom") tools must be answered with custom_tool_call items.
-      const { freeform } = collectCodexTools(req.body);
+      // Freeform ("custom") tools must be answered with custom_tool_call items, and a
+      // tool hoisted out of a namespace (every MCP server) must be answered with its
+      // namespace restored, or Codex cannot route the call.
+      const { freeform, namespaced } = collectCodexTools(req.body);
 
       const { upstream, startTime, provider: served, fallback } = await executeKiroWithFallback({
         adapter, provider, tool: "codex", model, rawModel, kiroPayload,
@@ -312,7 +329,7 @@ responsesRouter.post("/responses", async (req, res, next) => {
       // through Anthropic Messages shape.
       if (stream) {
         setSseHeaders(res);
-        const kiroUsage = await streamKiroToCodex(upstream.body, res, model, responseId, freeform, inputTokens);
+        const kiroUsage = await streamKiroToCodex(upstream.body, res, model, responseId, freeform, inputTokens, namespaced);
         logRequest({
           tool: "codex", rawModel, model, providerId: served.id, providerName: served.name,
           latencyMs: Date.now() - startTime, status: "ok", fallback,
@@ -325,7 +342,7 @@ responsesRouter.post("/responses", async (req, res, next) => {
         return;
       }
 
-      const { response, credits, contextUsagePercent, outputTokens } = await collectKiroAsCodex(upstream.body, model, responseId, freeform);
+      const { response, credits, contextUsagePercent, outputTokens } = await collectKiroAsCodex(upstream.body, model, responseId, freeform, namespaced);
       response.usage = {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
@@ -360,7 +377,7 @@ responsesRouter.post("/responses", async (req, res, next) => {
     }
     const messages = inputToMessages(req.body.input, req.body.instructions);
     // Tools come either top-level or inside an `additional_tools` input item.
-    const { tools: codexTools, freeform } = collectCodexTools(req.body);
+    const { tools: codexTools, freeform, namespaced } = collectCodexTools(req.body);
     const chatTools = codexTools.map((t) => ({
       type: "function",
       function: { name: t.name, description: t.description, parameters: t.input_schema },
@@ -396,12 +413,12 @@ responsesRouter.post("/responses", async (req, res, next) => {
 
     if (stream) {
       setSseHeaders(res);
-      for (const event of generateSSE(chatResponse, model, responseId, freeform)) res.write(event);
+      for (const event of generateSSE(chatResponse, model, responseId, freeform, namespaced)) res.write(event);
       res.end();
       return;
     }
 
-    res.json(chatToResponsesFormat(chatResponse, model, responseId, freeform));
+    res.json(chatToResponsesFormat(chatResponse, model, responseId, freeform, namespaced));
   } catch (err) {
     if (model && !(err instanceof ApiError)) recordError(model);
     if (err.name === "AbortError") return next(new ApiError(504, "Upstream timeout"));

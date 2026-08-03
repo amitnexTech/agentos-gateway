@@ -101,20 +101,107 @@ test("collectCodexTools: reads both wire shapes and flags freeform tools", () =>
       {
         type: "additional_tools",
         role: "developer",
-        tools: [
-          { type: "custom", name: "exec", description: "run a command" },
-          { type: "namespace", name: "collab", tools: [{ name: "spawn_agent" }] },
-        ],
+        tools: [{ type: "custom", name: "exec", description: "run a command" }],
       },
     ],
   });
 
-  assert.deepEqual(tools.map((t) => t.name), ["old_style", "exec"], "namespace tools are skipped");
+  assert.deepEqual(tools.map((t) => t.name), ["old_style", "exec"]);
   assert.deepEqual([...freeform], ["exec"]);
   // A freeform tool must be advertised with a JSON schema, because Kiro requires one.
   const exec = tools.find((t) => t.name === "exec");
   assert.equal(exec.input_schema.type, "object");
   assert.ok(exec.input_schema.properties.input, "freeform input is wrapped in an { input: string } schema");
+});
+
+test("collectCodexTools: namespace tools are hoisted, not skipped", () => {
+  // Measured 2026-08-03 from real Codex 0.146 traffic: EVERY MCP server arrives as
+  // a `namespace` tool (mcp__trailmem, mcp__graphify, …), as does sub-agent
+  // orchestration (multi_agent_v1). Skipping the type stripped all of them, so the
+  // model was told it had no MCP tools at all. Kiro's tool list is flat.
+  const { tools, namespaced } = collectCodexTools({
+    tools: [
+      { type: "function", name: "exec_command", parameters: { type: "object", properties: {} } },
+      {
+        type: "namespace",
+        name: "mcp__trailmem",
+        description: "Memory tools.",
+        tools: [
+          { type: "function", name: "trailmem_query", description: "search", parameters: { type: "object", properties: { text: { type: "string" } } } },
+          { type: "function", name: "trailmem_store", description: "save", parameters: { type: "object", properties: {} } },
+        ],
+      },
+      {
+        type: "namespace",
+        name: "multi_agent_v1",
+        tools: [{ type: "function", name: "spawn_agent", parameters: { type: "object", properties: {} } }],
+      },
+      { type: "web_search", external_web_access: false }, // no name, no Kiro equivalent
+    ],
+  });
+
+  assert.deepEqual(tools.map((t) => t.name), [
+    "exec_command",
+    "trailmem_query",
+    "trailmem_store",
+    "spawn_agent",
+  ]);
+  assert.deepEqual(tools.find((t) => t.name === "trailmem_query").input_schema.properties.text, { type: "string" });
+  // The map is what lets the reply carry the namespace back; without it Codex
+  // cannot route the call.
+  assert.deepEqual(namespaced.get("trailmem_query"), { namespace: "mcp__trailmem", name: "trailmem_query" });
+  assert.deepEqual(namespaced.get("spawn_agent"), { namespace: "multi_agent_v1", name: "spawn_agent" });
+  assert.equal(namespaced.has("exec_command"), false, "a top-level tool has no namespace");
+});
+
+test("collectCodexTools: a name collision falls back to the namespace, and stays inside Kiro's 64-char cap", () => {
+  const longNamespace = `mcp__${"x".repeat(70)}`;
+  const { tools, namespaced } = collectCodexTools({
+    tools: [
+      { type: "function", name: "search", parameters: {} },
+      { type: "namespace", name: "mcp__docs", tools: [{ type: "function", name: "search", parameters: {} }] },
+      { type: "namespace", name: longNamespace, tools: [{ type: "function", name: "search", parameters: {} }] },
+    ],
+  });
+
+  const names = tools.map((t) => t.name);
+  assert.equal(new Set(names).size, 3, "every advertised name must be unique");
+  assert.equal(names[0], "search", "the bare name goes to whoever claims it first");
+  assert.equal(names[1], "mcp__docs__search");
+  assert.ok(names.every((n) => n.length <= 64), `names must fit Kiro's cap: ${JSON.stringify(names)}`);
+  // Whatever the flattened name ended up being, it still maps back.
+  assert.deepEqual(namespaced.get(names[1]), { namespace: "mcp__docs", name: "search" });
+  assert.deepEqual(namespaced.get(names[2]), { namespace: longNamespace, name: "search" });
+});
+
+test("codexToKiro: a namespaced call replayed from history maps back to the advertised name", () => {
+  // Turn 2 of an MCP tool round trip: Codex sends back the function_call it received
+  // (with `namespace`) plus the output. Kiro rejects a toolUse whose name is not in
+  // the tool list, so the flat name has to be restored.
+  const reqBody = {
+    instructions: "You are Codex.",
+    tools: [
+      {
+        type: "namespace",
+        name: "mcp__trailmem",
+        tools: [{ type: "function", name: "trailmem_query", parameters: { type: "object", properties: {} } }],
+      },
+    ],
+    input: [
+      { type: "message", role: "user", content: "what do we know?" },
+      { type: "function_call", call_id: "call_1", name: "trailmem_query", namespace: "mcp__trailmem", arguments: '{"text":"gateway"}' },
+      { type: "function_call_output", call_id: "call_1", output: "3 memories" },
+    ],
+  };
+
+  const payload = codexToKiro(reqBody, "claude-sonnet-4.5");
+  const uses = history(payload).flatMap((h) => h.assistantResponseMessage?.toolUses || []);
+  assert.equal(uses.length, 1);
+  assert.equal(uses[0].name, "trailmem_query", "the flat advertised name, not namespace__name");
+  assert.deepEqual(uses[0].input, { text: "gateway" });
+  assert.equal(uses[0].toolUseId, "call_1");
+  const results = current(payload).userInputMessageContext?.toolResults || [];
+  assert.equal(results[0].toolUseId, "call_1");
 });
 
 test("codexToKiro: instructions become the system prompt and tool output lands in toolResults", () => {
