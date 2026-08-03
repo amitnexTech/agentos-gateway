@@ -3,6 +3,7 @@
 // Ported from Python kiro-gateway streaming_anthropic.py + parsers.py
 
 import { randomUUID } from "node:crypto";
+import { tokensFromChars } from "./tokens.js";
 
 /**
  * Find matching closing brace considering nesting and strings.
@@ -35,11 +36,32 @@ const EVENT_PATTERNS = [
   ['{"name":', "tool_start"],
   ['{"input":', "tool_input"],
   ['{"stop":', "tool_stop"],
+  ['{"stopReason":', "stop_reason"],
   ['{"followupPrompt":', "followup"],
   ['{"usage":', "usage"],
   ['{"unit":', "usage"],
   ['{"contextUsagePercentage":', "context_usage"],
 ];
+
+// Kiro's own stop reason (Bedrock-style, e.g. {"stopReason":"END_TURN"}) mapped to
+// the Anthropic vocabulary. Until 2026-08-03 the gateway dropped this event and
+// inferred "tool_use or end_turn" from the content instead, which reported a reply
+// truncated at max_tokens as a clean end_turn — the client had no way to know the
+// answer was cut off. Unknown values fall through to the caller's inference.
+const KIRO_STOP_REASON = {
+  END_TURN: "end_turn",
+  TOOL_USE: "tool_use",
+  MAX_TOKENS: "max_tokens",
+  STOP_SEQUENCE: "stop_sequence",
+  CONTENT_FILTERED: "refusal",
+  GUARDRAIL_INTERVENED: "refusal",
+};
+
+export function anthropicStopReasonFromKiro(kiroStopReason, hasToolCalls) {
+  const mapped = KIRO_STOP_REASON[String(kiroStopReason || "").toUpperCase()];
+  if (mapped) return mapped;
+  return hasToolCalls ? "tool_use" : "end_turn";
+}
 
 /**
  * Parse raw bytes buffer and extract Kiro events.
@@ -80,6 +102,8 @@ export function parseKiroChunk(buffer) {
         events.push({ type: "tool_input", data });
       } else if (earliestType === "tool_stop") {
         events.push({ type: "tool_stop", data });
+      } else if (earliestType === "stop_reason") {
+        events.push({ type: "stop_reason", data: data.stopReason });
       } else if (earliestType === "usage") {
         events.push({ type: "usage", data: data.usage || data });
       } else if (earliestType === "context_usage") {
@@ -139,7 +163,13 @@ export async function streamKiroToAnthropic(body, res, model, inputTokens = 0) {
   let buffer = "";
   let contentBlockIndex = 0;
   let contentBlockOpen = false;
-  let outputTokens = 0;
+  // Kiro reports no token counts at all (verified 2026-08-03 against the raw
+  // stream: the only numbers are contextUsagePercentage and credits), so output
+  // tokens are an estimate. Characters are accumulated and converted ONCE at the
+  // end — the old per-fragment Math.ceil(len/4) rounded up on every delta, which
+  // inflated the count by up to 3 tokens per chunk.
+  let outputChars = 0;
+  let kiroStopReason = null;
   let currentToolCall = null;
   let toolCalls = [];
   // toolUseIds already sent to the client, so Kiro's trailing repeat is ignored.
@@ -167,7 +197,7 @@ export async function streamKiroToAnthropic(body, res, model, inputTokens = 0) {
     // Tool-call JSON is billed output too. Counting only text deltas made
     // tool-only turns report output_tokens: 0 — 30% of a measured session's
     // credit spend looked free. Count the name plus the input JSON.
-    outputTokens += Math.ceil((currentToolCall.name.length + (currentToolCall.inputStr || "").length) / 4);
+    outputChars += currentToolCall.name.length + (currentToolCall.inputStr || "").length;
     toolCalls.push(currentToolCall);
     currentToolCall = null;
     contentBlockIndex++;
@@ -213,7 +243,7 @@ export async function streamKiroToAnthropic(body, res, model, inputTokens = 0) {
           index: contentBlockIndex,
           delta: { type: "text_delta", text: ev.data },
         }));
-        outputTokens += Math.ceil(ev.data.length / 4); // rough estimate
+        outputChars += ev.data.length;
       } else if (ev.type === "tool_start") {
         // Close text content block if open
         if (contentBlockOpen) {
@@ -294,6 +324,8 @@ export async function streamKiroToAnthropic(body, res, model, inputTokens = 0) {
         }
       } else if (ev.type === "tool_stop") {
         finalizeToolBlock();
+      } else if (ev.type === "stop_reason") {
+        kiroStopReason = ev.data || null;
       } else if (ev.type === "usage") {
         if (typeof ev.data === "number") {
           kiroCredits = ev.data;
@@ -314,8 +346,10 @@ export async function streamKiroToAnthropic(body, res, model, inputTokens = 0) {
     }));
   }
 
-  // Determine stop reason
-  const stopReason = toolCalls.length > 0 ? "tool_use" : "end_turn";
+  // Kiro's own stop reason, when it sent one: a reply truncated at max_tokens must
+  // not be reported as a clean end_turn.
+  const stopReason = anthropicStopReasonFromKiro(kiroStopReason, toolCalls.length > 0);
+  const outputTokens = tokensFromChars(outputChars);
 
   // Emit message_delta (final usage)
   res.write(sse("message_delta", {
@@ -327,7 +361,7 @@ export async function streamKiroToAnthropic(body, res, model, inputTokens = 0) {
   // Emit message_stop
   res.write(sse("message_stop", { type: "message_stop" }));
 
-  return { credits: kiroCredits, contextUsagePercent, outputTokens };
+  return { credits: kiroCredits, contextUsagePercent, outputTokens, stopReason };
 }
 /**
  * Collect full Kiro response (non-streaming) and build Anthropic Messages response.
@@ -345,6 +379,7 @@ export async function collectKiroResponse(body, model, inputTokens = 0) {
   let outputTokens = 0;
   let kiroCredits = 0;
   let contextUsagePercent = 0;
+  let kiroStopReason = null;
 
   const decoder = new TextDecoder();
   const reader = body.getReader ? body.getReader() : null;
@@ -411,6 +446,8 @@ export async function collectKiroResponse(body, model, inputTokens = 0) {
           toolCalls.push(currentToolCall);
           currentToolCall = null;
         }
+      } else if (ev.type === "stop_reason") {
+        kiroStopReason = ev.data || null;
       } else if (ev.type === "usage") {
         if (typeof ev.data === "number") {
           kiroCredits = ev.data;
@@ -434,10 +471,11 @@ export async function collectKiroResponse(body, model, inputTokens = 0) {
   }
   const uniqueToolCalls = [...byId.values()];
 
-  // Text plus tool-call JSON — both are billed output.
-  outputTokens = Math.ceil(
-    (fullContent.length +
-      uniqueToolCalls.reduce((n, tc) => n + tc.name.length + (tc.inputStr || "").length, 0)) / 4
+  // Text plus tool-call JSON — both are billed output. One conversion at the end;
+  // Kiro sends no token counts, so this is an estimate (see tokens.js).
+  outputTokens = tokensFromChars(
+    fullContent.length +
+      uniqueToolCalls.reduce((n, tc) => n + tc.name.length + (tc.inputStr || "").length, 0)
   );
 
   // Build Anthropic response
@@ -451,7 +489,7 @@ export async function collectKiroResponse(body, model, inputTokens = 0) {
     content.push({ type: "tool_use", id: tc.id, name: tc.name, input });
   }
 
-  const stopReason = uniqueToolCalls.length > 0 ? "tool_use" : "end_turn";
+  const stopReason = anthropicStopReasonFromKiro(kiroStopReason, uniqueToolCalls.length > 0);
 
   return {
     id: `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`,

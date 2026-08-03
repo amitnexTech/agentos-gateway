@@ -15,9 +15,31 @@ The Kiro routes used to log `input_tokens: 0`, which hid exactly this. Now:
 - Tool-call JSON now counts as output tokens (`stream.js`, `codexStream.js`). Previously only text deltas counted, so tool-only turns reported `output_tokens: 0` — 30% of a measured session's spend looked free.
 - The `$ cost` column on Kiro is an **analogy** at Anthropic list rates, useful for making input cost legible. `kiroCredits` is the real spend.
 
+### What Kiro's stream actually contains (verified 2026-08-03)
+
+Dumping every JSON blob in a raw Kiro response — not just the ones the parser recognises — gives the complete list of keys it ever sends:
+
+```
+conversationId, content, modelId, stopReason, contextUsagePercentage, unit, unitPlural, usage
+```
+
+Three consequences, all now handled:
+
+- **There are no token counts. At all.** The only numbers are `contextUsagePercentage` and a credit figure (`{"unit":"credit","usage":0.0074}`). So every token number on the Kiro path is the gateway's ~4-chars-per-token estimate and always will be. `logRequest` now sets `usageEstimated` for Kiro rows and the log page prefixes them with `~`, including `tok/s`, which is derived from them. An estimate presented as a measurement is the thing worth fixing; the estimate itself cannot be.
+- **`stopReason` was being thrown away.** It has no pattern in `parseKiroChunk`, so the converters inferred "tool_use if there were tool calls, else end_turn". A reply truncated by the model would have been reported as a clean `end_turn`. It is now parsed and mapped (`END_TURN`→`end_turn`, `MAX_TOKENS`→`max_tokens`, `TOOL_USE`→`tool_use`, `STOP_SEQUENCE`→`stop_sequence`, `CONTENT_FILTERED`/`GUARDRAIL_INTERVENED`→`refusal`), with the old inference kept for values Kiro has not been seen to send. On the Codex path `MAX_TOKENS` becomes `status: "incomplete"` with `incomplete_details.reason`.
+- **The per-fragment rounding inflated output tokens.** `Math.ceil(len / 4)` ran on every delta, so 20 five-character deltas counted 40 tokens where the estimate should be 25. Characters are now accumulated and converted once, in `tokensFromChars()`.
+
+> **`max_tokens` is a no-op on Kiro.** The payload the gateway builds carries `content`, `modelId`, `origin` and the tool context — there is no field for a token limit in the reverse-engineered protocol, so a client's `max_tokens` is dropped. Measured: a request asking for `max_tokens: 8` came back with 2181 characters (~546 estimated tokens) and `stopReason: END_TURN`. A client cannot cap the length, or the cost, of a Kiro turn.
+
+### The `$` column no longer invents prices
+
+It used to price **every** model it did not recognise at Claude Sonnet rates — `$3`/`$15` per million — so a Kimi or Llama request through a router showed a confident dollar figure derived from Anthropic's price list, and Haiku (`$1`/`$5`) was billed at 3x its real rate. Now `MODEL_RATES` in `logStore.js` holds only the rates that are actually known (opus / sonnet / haiku patterns), and anything else logs `cost: null` and renders `—` with a tooltip saying why. A blank is honest; a wrong number is not, and this column exists to be trusted.
+
+Adding a family is one line in that table. It is deliberately not user-configurable: nobody has needed per-model rates in the dashboard, and a stale hand-entered rate would recreate the same problem.
+
 Spending less is behavioural, not a code fix: fewer turns, `/clear` more often, and don't route Claude Code's tiny utility calls (38% of requests) to an expensive account.
 
-**Known gap:** the `kiro` provider path estimates tokens at ~4 chars/token rather than counting them (Kiro reports no token counts at all), so `tps` and `cost` are approximations there. Anthropic-compat providers are unaffected — their usage comes straight from upstream.
+**Known gap:** the `kiro` provider path estimates tokens at ~4 chars/token rather than counting them, because Kiro reports no token counts at all (see above — this is a property of its API, not something the gateway can fix). `tps` and `cost` are therefore approximations there, and are marked as such in the log. Anthropic-compat providers are unaffected — their usage comes straight from upstream.
 
 ## Prompt caching on Kiro — measured, then rejected (2026-08-01)
 

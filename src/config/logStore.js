@@ -61,27 +61,49 @@ function normalizeModel(m) {
     .trim();
 }
 
+// Approximate per-million-token rates, matched against the model id. Only rates
+// that are actually KNOWN are listed. Everything else gets `cost: null` and the log
+// shows "—", because the old behaviour — pricing every unrecognised model at Claude
+// Sonnet rates — put a confident dollar figure on a Groq or Kimi request that had
+// nothing to do with Anthropic's price list. Haiku was priced as Sonnet too, 3x its
+// real rate. Anthropic list prices as of 2026-08; a cache read is 10% of input and
+// a cache write 125%.
+const MODEL_RATES = [
+  [/opus/i, { input: 15, output: 75 }],
+  [/sonnet/i, { input: 3, output: 15 }],
+  [/haiku/i, { input: 1, output: 5 }],
+];
+
+function ratesFor(model) {
+  const id = String(model || "");
+  for (const [pattern, rates] of MODEL_RATES) if (pattern.test(id)) return rates;
+  return null;
+}
+
 export function logRequest({ tool, rawModel, model, providerId, providerName, latencyMs, status, error, responseModel, responseId, usage, kiroCredits, fallback, contextUsagePercent, historyEntries, payloadChars }) {
-  // Approximate cost calculation (per million tokens)
-  // Claude Sonnet: $3/M input, $15/M output, cache read 90% off
-  // Claude Opus: $15/M input, $75/M output
-  // Others: estimate $2/M input, $10/M output
-  //
-  // On the Kiro path this is an ANALOGY, not a bill: Kiro charges credits, and
-  // `kiroCredits` is the real figure. The $ number is still worth showing there
-  // because it prices the input side at Anthropic list rates, which is what makes
-  // the full-history-per-turn cost legible. Read the credits column for spend.
+  // Kiro reports no token counts at all, so every token number on that path is a
+  // ~4-chars-per-token estimate (see kiro/tokens.js). Flagged here so the log can
+  // say so instead of presenting an estimate as a measurement.
+  let usageEstimated = false;
+  try {
+    usageEstimated = Boolean(usage) && getProvider(providerId)?.type === "kiro";
+  } catch {
+    // Non-fatal: logging must never break a proxied request.
+  }
+
+  // Approximate cost. On the Kiro path this is an ANALOGY, not a bill: Kiro charges
+  // credits, and `kiroCredits` is the real figure. The $ number is still worth
+  // showing there because it prices the input side at Anthropic list rates, which is
+  // what makes the full-history-per-turn cost legible. Read the credits column for
+  // actual spend.
   let cost = null;
-  if (usage) {
-    const isOpus = (model || "").includes("opus");
-    const inputRate = isOpus ? 15 : 3; // $/M tokens
-    const outputRate = isOpus ? 75 : 15;
-    const cacheRate = inputRate * 0.1; // 90% discount
+  const rates = usage ? ratesFor(model) : null;
+  if (rates) {
     cost = (
-      (usage.input_tokens || 0) * inputRate / 1_000_000 +
-      (usage.output_tokens || 0) * outputRate / 1_000_000 +
-      (usage.cache_read || 0) * cacheRate / 1_000_000 +
-      (usage.cache_write || 0) * inputRate * 1.25 / 1_000_000
+      (usage.input_tokens || 0) * rates.input / 1_000_000 +
+      (usage.output_tokens || 0) * rates.output / 1_000_000 +
+      (usage.cache_read || 0) * rates.input * 0.1 / 1_000_000 +
+      (usage.cache_write || 0) * rates.input * 1.25 / 1_000_000
     );
     cost = Math.round(cost * 10000) / 10000; // 4 decimal places
   }
@@ -114,6 +136,7 @@ export function logRequest({ tool, rawModel, model, providerId, providerName, la
     responseId: responseId || null,
     modelMismatch: Boolean(responseModel) && normalizeModel(responseModel) !== normalizeModel(model),
     usage: usage || null,
+    usageEstimated,
     cost,
     kiroCredits: kiroCredits != null ? Math.round(kiroCredits * 1000000) / 1000000 : null,
     // Kiro-only context signals. contextUsagePercent is Kiro's own number — the

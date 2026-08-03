@@ -12,6 +12,7 @@
 
 import { randomUUID } from "node:crypto";
 import { parseKiroChunk } from "./stream.js";
+import { tokensFromChars } from "./tokens.js";
 
 // ponytail: 3-line async iterator over a ReadableStream/AsyncIterable, duplicated
 // from stream.js rather than refactoring the working Claude path. Add a shared
@@ -100,6 +101,7 @@ export async function collectKiroAsCodex(body, model, responseId, freeform = new
   let outputTokens = 0;
   let kiroCredits = 0;
   let contextUsagePercent = 0;
+  let kiroStopReason = null;
 
   const decoder = new TextDecoder();
   for await (const chunk of iterate(body)) {
@@ -148,6 +150,8 @@ export async function collectKiroAsCodex(body, model, responseId, freeform = new
           toolCalls.push(currentToolCall);
           currentToolCall = null;
         }
+      } else if (ev.type === "stop_reason") {
+        kiroStopReason = ev.data || null;
       } else if (ev.type === "usage") {
         if (typeof ev.data === "number") kiroCredits = ev.data;
         else if (typeof ev.data === "object" && ev.data.usage !== undefined) kiroCredits = ev.data.usage;
@@ -167,10 +171,10 @@ export async function collectKiroAsCodex(body, model, responseId, freeform = new
   }
   const unique = [...byId.values()];
 
-  // Text plus tool-call JSON — both are billed output.
-  outputTokens = Math.ceil(
-    (fullContent.length +
-      unique.reduce((n, tc) => n + tc.name.length + (tc.inputStr || "").length, 0)) / 4
+  // Text plus tool-call JSON — both are billed output. Kiro sends no token counts,
+  // so this is an estimate; convert once from the total character count.
+  outputTokens = tokensFromChars(
+    fullContent.length + unique.reduce((n, tc) => n + tc.name.length + (tc.inputStr || "").length, 0)
   );
 
   // Build Responses output items: tool calls first, then the text message.
@@ -203,7 +207,12 @@ export async function collectKiroAsCodex(body, model, responseId, freeform = new
     id: responseId,
     object: "response",
     created_at: Math.floor(Date.now() / 1000),
-    status: "completed",
+    // Kiro says when it truncated; reporting that as "completed" would hide a cut-off
+    // answer from the client.
+    status: String(kiroStopReason || "").toUpperCase() === "MAX_TOKENS" ? "incomplete" : "completed",
+    ...(String(kiroStopReason || "").toUpperCase() === "MAX_TOKENS"
+      ? { incomplete_details: { reason: "max_output_tokens" } }
+      : {}),
     model,
     output,
     usage: {
@@ -236,7 +245,10 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
   let buffer = "";
   let kiroCredits = 0;
   let contextUsagePercent = 0;
-  let outputTokens = 0;
+  // Characters, converted to an estimated token count once at the end: Kiro reports
+  // no token numbers, and rounding up per fragment inflated the total.
+  let outputChars = 0;
+  let kiroStopReason = null;
 
   let outputIdx = 0;
   let textItemOpen = false;
@@ -290,7 +302,7 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
     if (!currentTool) return;
     // Tool-call JSON is billed output; counting only text deltas made tool-only
     // turns report output_tokens: 0. Same fix as stream.js.
-    outputTokens += Math.ceil((currentTool.name.length + (currentTool.inputStr || "").length) / 4);
+    outputChars += currentTool.name.length + (currentTool.inputStr || "").length;
     if (currentTool.isFreeform) {
       // Freeform tool: Codex wants a custom_tool_call item carrying raw text.
       const raw = unwrapFreeform(currentTool.inputStr || "");
@@ -355,7 +367,7 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
         res.write(sse("response.output_text.delta", {
           type: "response.output_text.delta", output_index: outputIdx, content_index: 0, delta: ev.data,
         }));
-        outputTokens += Math.ceil(ev.data.length / 4);
+        outputChars += ev.data.length;
       } else if (ev.type === "tool_start") {
         // A new tool call closes any open text item.
         if (textItemOpen) closeTextItem();
@@ -414,6 +426,8 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
         }
       } else if (ev.type === "tool_stop") {
         finalizeTool();
+      } else if (ev.type === "stop_reason") {
+        kiroStopReason = ev.data || null;
       } else if (ev.type === "usage") {
         if (typeof ev.data === "number") kiroCredits = ev.data;
         else if (typeof ev.data === "object" && ev.data.usage !== undefined) kiroCredits = ev.data.usage;
@@ -426,18 +440,25 @@ export async function streamKiroToCodex(body, res, model, responseId, freeform =
   if (textItemOpen) closeTextItem();
   if (currentTool) finalizeTool();
 
+  const outputTokens = tokensFromChars(outputChars);
+  // Kiro's own stop reason, when it sent one. A reply truncated at max_tokens is
+  // reported as `incomplete` rather than a clean completion, which is the same
+  // convention the standard-provider path uses for finish_reason "length".
+  const truncated = String(kiroStopReason || "").toUpperCase() === "MAX_TOKENS";
+
   // response.completed with the terminal status. (Responses API has no [DONE].)
   // `output` repeats the completed items and `input_tokens` carries the measured
   // prompt size — an empty output here left clients that read the final snapshot
   // (rather than accumulating the item events) with no answer at all.
-  res.write(sse("response.completed", {
-    type: "response.completed",
+  res.write(sse(truncated ? "response.incomplete" : "response.completed", {
+    type: truncated ? "response.incomplete" : "response.completed",
     response: {
-      id: responseId, object: "response", status: "completed", model,
+      id: responseId, object: "response", status: truncated ? "incomplete" : "completed", model,
+      ...(truncated ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
       output: completedItems,
       usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens },
     },
   }));
 
-  return { credits: kiroCredits, contextUsagePercent, outputTokens };
+  return { credits: kiroCredits, contextUsagePercent, outputTokens, stopReason: kiroStopReason };
 }

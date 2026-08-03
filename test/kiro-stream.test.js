@@ -65,3 +65,46 @@ test("a buffer with no recognisable blob is returned intact", () => {
   assert.deepEqual(events, []);
   assert.equal(remaining, "binary framing bytes with no json");
 });
+
+
+test("Kiro's own stopReason is parsed instead of being inferred from the content", () => {
+  // Verified against a real Kiro stream 2026-08-03: it sends {"stopReason":"END_TURN"}.
+  // The parser used to have no pattern for it, so a reply truncated at max_tokens was
+  // reported to the client as a clean end_turn.
+  const { events } = parseKiroChunk('{"content":"hi"}{"stopReason":"END_TURN"}');
+  assert.deepEqual(events, [
+    { type: "content", data: "hi" },
+    { type: "stop_reason", data: "END_TURN" },
+  ]);
+  // The tool_stop pattern ({"stop":) must not swallow it.
+  assert.deepEqual(parseKiroChunk('{"stopReason":"MAX_TOKENS"}').events, [{ type: "stop_reason", data: "MAX_TOKENS" }]);
+});
+
+test("Kiro stop reasons map to the Anthropic vocabulary, unknown ones fall back", async () => {
+  const { anthropicStopReasonFromKiro } = await import("../src/kiro/stream.js");
+  assert.equal(anthropicStopReasonFromKiro("END_TURN", false), "end_turn");
+  assert.equal(anthropicStopReasonFromKiro("MAX_TOKENS", false), "max_tokens", "a cut-off answer must say so");
+  assert.equal(anthropicStopReasonFromKiro("TOOL_USE", true), "tool_use");
+  assert.equal(anthropicStopReasonFromKiro("STOP_SEQUENCE", false), "stop_sequence");
+  assert.equal(anthropicStopReasonFromKiro("CONTENT_FILTERED", false), "refusal");
+  assert.equal(anthropicStopReasonFromKiro("end_turn", false), "end_turn", "case-insensitive");
+  // Kiro omitting it, or sending something new, keeps the old inference.
+  assert.equal(anthropicStopReasonFromKiro(null, true), "tool_use");
+  assert.equal(anthropicStopReasonFromKiro(null, false), "end_turn");
+  assert.equal(anthropicStopReasonFromKiro("SOMETHING_NEW", true), "tool_use");
+});
+
+test("token estimates convert once from a character total, not per fragment", async () => {
+  const { tokensFromChars, estimateTokens } = await import("../src/kiro/tokens.js");
+  // 20 five-character deltas: rounding up per delta gave 20 x ceil(5/4) = 40 tokens
+  // for what is really ceil(100/4) = 25. That inflation is why Kiro tok/s and cost
+  // numbers drifted.
+  const fragments = Array(20).fill("12345");
+  const perFragment = fragments.reduce((n, f) => n + Math.ceil(f.length / 4), 0);
+  const accumulated = tokensFromChars(fragments.reduce((n, f) => n + f.length, 0));
+  assert.equal(perFragment, 40);
+  assert.equal(accumulated, 25);
+  assert.equal(tokensFromChars(0), 0);
+  assert.equal(tokensFromChars(1), 1);
+  assert.equal(estimateTokens("abcde"), 2, "the string form is the same conversion");
+});

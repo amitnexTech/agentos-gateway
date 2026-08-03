@@ -55,7 +55,7 @@ export function renderLogPage() {
       </div>
       <div class="actions">
         <span class="pill" id="countPill">0 entries</span>
-        <span class="pill" id="costPill">$0.00</span>
+        <span class="pill" id="costPill" title="Sum of the rows that have a known rate; rows priced '—' are not counted.">$0.00</span>
         <span class="pill" id="creditsPill" title="Kiro credits only">0 cr</span>
         <span class="pill" id="tokenPill">0 tokens</span>
         <select id="filterTool">
@@ -73,7 +73,7 @@ export function renderLogPage() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th>Tokens (in/out/cache)</th><th title="How full the model's context window is. On Kiro this is the provider's own reported percentage; the history entry count is what the gateway re-sent this turn.">Context</th><th>Cost</th><th>Kiro Cr</th><th>Latency</th><th title="Output tokens per second — the speed fingerprint of the model that actually ran">tok/s</th><th>Status</th><th>Error</th></tr>
+          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th title="A leading ~ means the gateway estimated these (~4 chars per token) because the provider reports no token counts — that is every Kiro request.">Tokens (in/out/cache)</th><th title="How full the model's context window is. On Kiro this is the provider's own reported percentage; the history entry count is what the gateway re-sent this turn.">Context</th><th title="Approximate, at Anthropic list rates. Blank when no rate is known for the model — a guessed price is worse than none. On Kiro read the credits column for real spend.">Cost</th><th>Kiro Cr</th><th>Latency</th><th title="Output tokens per second — the speed fingerprint of the model that actually ran. Estimated (~) wherever the token count is.">tok/s</th><th>Status</th><th>Error</th></tr>
         </thead>
         <tbody id="logBody"></tbody>
       </table>
@@ -150,12 +150,21 @@ export function renderLogPage() {
               : '<span class="mono">'+escapeHtml(l.model)+'</span> → <span class="badge ok">'+escapeHtml(l.responseModel)+'</span>')
             : '<span class="mono">'+escapeHtml(l.model)+'</span>')
             + (l.responseId ? '<div class="mono" style="color:var(--muted);font-size:11px" title="Upstream message id. Real Anthropic ids look like msg_01… — a synthetic shape means a proxy generated it.">'+escapeHtml(l.responseId)+'</div>' : '');
+          // A "~" means the numbers are the gateway's ~4-chars-per-token estimate,
+          // not counts from the provider. Kiro reports no token numbers at all, so
+          // every Kiro row is estimated — and its tok/s therefore is too.
+          const est = l.usageEstimated ? '~' : '';
+          const estTitle = l.usageEstimated
+            ? ' title="Estimated (~4 chars per token): this provider reports no token counts. Read the Kiro Cr column for actual spend."'
+            : '';
           const tokenCell = l.usage
-            ? '<span class="mono">'+l.usage.input_tokens+'↓ '+l.usage.output_tokens+'↑'+(l.usage.cache_read?' C:'+l.usage.cache_read+'r':'')+(l.usage.cache_write?' '+l.usage.cache_write+'w':'')+'</span>'
+            ? '<span class="mono"'+estTitle+'>'+est+l.usage.input_tokens+'↓ '+est+l.usage.output_tokens+'↑'+(l.usage.cache_read?' C:'+l.usage.cache_read+'r':'')+(l.usage.cache_write?' '+l.usage.cache_write+'w':'')+'</span>'
             : '<span style="color:var(--muted)">—</span>';
-          const costCell = l.cost !== null ? '<span class="mono">$'+l.cost.toFixed(4)+'</span>' : '—';
+          const costCell = l.cost !== null
+            ? '<span class="mono"'+estTitle+'>'+est+'$'+l.cost.toFixed(4)+'</span>'
+            : '<span style="color:var(--muted)" title="No known price for this model, so no figure is shown — a rate guessed from another vendor\'s list would be worse than a blank.">—</span>';
           const creditsCell = l.kiroCredits ? '<span class="mono">'+l.kiroCredits.toFixed(4)+' cr</span>' : '';
-          const tpsCell = l.tps != null ? '<span class="mono">'+l.tps.toFixed(1)+'</span>' : '<span style="color:var(--muted)">—</span>';
+          const tpsCell = l.tps != null ? '<span class="mono"'+estTitle+'>'+est+l.tps.toFixed(1)+'</span>' : '<span style="color:var(--muted)">—</span>';
           return '<tr>' +
             '<td class="mono">'+formatTime(l.ts)+'</td>' +
             '<td><span class="badge '+escapeHtml(l.tool)+'">'+escapeHtml(l.tool)+'</span></td>' +

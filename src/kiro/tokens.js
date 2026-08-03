@@ -14,9 +14,17 @@
 
 const CHARS_PER_TOKEN = 4;
 
+// Kiro reports NO token counts (verified 2026-08-03 against the raw stream: the
+// only numbers it sends are contextUsagePercentage and a credit figure), so every
+// token number on the Kiro path is this estimate. Convert once from a total
+// character count — rounding up per fragment, as the stream converters used to,
+// inflated the result by up to 3 tokens per delta.
+export function tokensFromChars(chars) {
+  return chars > 0 ? Math.ceil(chars / CHARS_PER_TOKEN) : 0;
+}
+
 export function estimateTokens(text) {
-  if (!text) return 0;
-  return Math.ceil(String(text).length / CHARS_PER_TOKEN);
+  return tokensFromChars(text ? String(text).length : 0);
 }
 
 // Sum the characters of everything in a Kiro history/current message entry:
