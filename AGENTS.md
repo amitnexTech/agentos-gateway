@@ -133,8 +133,8 @@ class: the model looks uncooperative instead of the request looking broken.
 3. **Kiro credit budget enforcement** — an account past its `creditBudget` is refused with 402 before spending, and auto-fallback hands over to an account with room
 4. **Per-model routes + force route** — one model id can go to a different provider than its tool's slot, optionally renamed upstream (`claude-sonnet-5` → aeorlink as `claude-sonnet-4-5-20250929`); `"*"` forces every model onto one target so the dashboard decides what actually runs, and `exempt` keeps a model id out of that force route (dashboard: Routing → Model overrides; API: `GET`/`POST /admin/routing/models`)
 5. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
-6. **Token tracking** — input/output/cache_read/cache_write per request
-7. **Cost estimation** — approximate $ cost per request based on Anthropic pricing
+6. **Token tracking** — input/output/cache_read/cache_write per request; Kiro rows are marked `~` because Kiro reports no token counts at all (estimate at ~4 chars/token)
+7. **Cost estimation** — approximate $ per request at Anthropic list rates for known Claude families; an unrecognised model shows `—` rather than a guessed price
 8. **Model alias mapping** — Claude Code dated names auto-resolved (claude-sonnet-4-20250514 → claude-sonnet-4.5)
 9. **Auto /v1 detection** — base URL auto-corrected if user doesn't add /v1
 10. **Enable/Disable** — per-provider toggle, disabled providers don't route
