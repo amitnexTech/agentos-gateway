@@ -16,6 +16,9 @@ import {
   getModelRoutes,
   resolveModelRoute,
   setModelRoute,
+  getProfiles,
+  resolveProfile,
+  setProfile,
   supportedTypesForTool,
   isFallbackEnabled,
   setFallbackEnabled,
@@ -240,6 +243,43 @@ adminRouter.post("/routing/fallback", (req, res, next) => {
     const { enabled } = req.body || {};
     const routing = setFallbackEnabled(Boolean(enabled));
     res.json({ ok: true, fallbackEnabled: isFallbackEnabled(), routing });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Session profiles (per-session provider + model, chosen by base URL) ---
+// A tool slot is global: every session follows it. A profile is the same pairing
+// scoped to one session, selected by the base URL it was started with, so
+// parallel sessions can run different models. See keysStore "Session profiles".
+
+adminRouter.get("/profiles", (_req, res) => {
+  const out = {};
+  for (const [name, profile] of Object.entries(getProfiles())) {
+    const resolved = resolveProfile(name);
+    out[name] = resolved
+      ? { id: resolved.provider.id, name: resolved.provider.name, type: resolved.provider.type, model: resolved.model }
+      // Reported, not hidden: a profile whose provider is gone refuses every
+      // request from its sessions, so it has to be visible in the dashboard.
+      : { id: profile?.providerId || null, name: null, type: null, model: profile?.model || null, unavailable: true };
+  }
+  res.json(out);
+});
+
+// POST /admin/profiles { name, providerId, model? } — providerId null deletes it.
+adminRouter.post("/profiles", (req, res, next) => {
+  try {
+    const { name, providerId, model } = req.body || {};
+    if (!name) throw new ApiError(400, "name is required");
+    if (providerId) requireProvider(providerId);
+    const profiles = setProfile(name, providerId ? { providerId, model: model || null } : null);
+    if (!profiles) {
+      throw new ApiError(
+        400,
+        "Rejected: unknown provider, or a name outside a-z 0-9 _ - (max 32 chars — it becomes a URL path segment)"
+      );
+    }
+    res.json({ ok: true, profiles });
   } catch (err) {
     next(err);
   }

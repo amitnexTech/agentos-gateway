@@ -166,8 +166,26 @@ export function renderAdminPage() {
             <strong style="font-size:13px">Model ids clients actually asked for</strong>
             <span class="pill" id="seenCount">0</span>
           </div>
-          <div class="subline" style="margin-bottom:8px">Read from the request log, so there is no guessing about what an agent sends — this is where Claude Code's subagent id and its auto-mode classifier id show up. Click one to load it into the form above.</div>
+          <div class="subline" style="margin-bottom:8px">Read from the request log, so there is no guessing about what an agent sends — this is where Claude Code's subagent id and its auto-mode classifier id show up. Click <strong>Use in form</strong> to load an id into the override form above. This list is not config: it is derived from the last 200 logged requests, so there is nothing to delete here — it changes as the log rolls over, and <em>Clear log</em> on the log page empties it.</div>
+          <div id="seenNote" class="subline" style="display:none;margin-bottom:8px;color:var(--accent)"></div>
           <div id="seenList"></div>
+        </div>
+      </div>
+    </section>
+
+    <section style="margin-bottom:16px">
+      <div class="panel-head">
+        <h2>Session profiles</h2>
+        <span class="pill" id="profileCount">none</span>
+      </div>
+      <div class="panel-body">
+        <div class="subline" style="margin-bottom:10px">The routing above is global — every session follows it. A profile is the same "this provider, this model" pairing scoped to ONE session, so parallel sessions can run different models: backend on Opus, frontend on Kimi, docs on Sonnet, all at once. A session picks its profile from the base URL it starts with, which also covers that session's background calls.</div>
+        <div id="profileList"></div>
+        <div style="display:grid;grid-template-columns:1fr 1.2fr 1.2fr auto;gap:8px;align-items:end;margin-top:10px">
+          <label title="Becomes a URL path segment: a-z, 0-9, _ and - only.">Name<input id="pfName" autocomplete="off" placeholder="backend"></label>
+          <label>Provider<select id="pfProvider"></select></label>
+          <label title="Which of that provider's models this session runs. Leave on (client decides) to pin only the account.">Model<select id="pfModel"></select></label>
+          <button id="pfAddBtn" type="button">Add</button>
         </div>
       </div>
     </section>
@@ -283,7 +301,7 @@ export function renderAdminPage() {
   </main>
 
   <script>
-    const state = { providers: [], selectedProvider: null, fetchedModels: [], activeModels: [], stats: {}, routing: {}, modelRoutes: {}, seenModels: [] };
+    const state = { providers: [], selectedProvider: null, fetchedModels: [], activeModels: [], stats: {}, routing: {}, modelRoutes: {}, seenModels: [], profiles: {} };
     const el = (id) => document.getElementById(id);
     function setNotice(msg, kind="") { const n=el("notice"); n.className="notice "+kind; n.textContent=msg; }
     function escapeHtml(v) { return String(v).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;"); }
@@ -461,6 +479,73 @@ export function renderAdminPage() {
       if (!input.dataset.touched) input.value = el("ovTarget").value || "";
     }
 
+    // Session profiles. Each row shows the base URL to paste into that session,
+    // because the URL IS the selector — a profile nobody points a client at does
+    // nothing.
+    function renderProfiles() {
+      const names = Object.keys(state.profiles);
+      el("profileCount").textContent = names.length ? names.length + " active" : "none";
+      el("profileList").innerHTML = names.length
+        ? names.map(name => {
+            const p = state.profiles[name];
+            const target = p.unavailable
+              ? '<span class="status error">' + escapeHtml(p.id || "?") + ' unavailable — sessions on this profile are refused</span>'
+              : '<strong>' + escapeHtml(p.name) + '</strong> <span class="status">' + escapeHtml(p.type) + '</span>' +
+                (p.model ? ' <span class="status active">' + escapeHtml(p.model) + '</span>' : ' <span class="status">client decides</span>');
+            return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">' +
+              '<span class="mono">' + escapeHtml(name) + '</span>' +
+              '<span style="color:var(--muted)">&rarr;</span>' + target +
+              '<span class="mono" style="font-size:11px;color:var(--muted)">' + escapeHtml(location.origin + "/p/" + name) + '</span>' +
+              '<button class="danger" style="margin-left:auto" data-pf-name="' + escapeHtml(name) + '">Remove</button>' +
+            '</div>';
+          }).join("")
+        : '<div class="empty">No profiles — every session follows the global routing above.</div>';
+
+      const sel = el("pfProvider");
+      const cur = sel.value;
+      sel.innerHTML = state.providers
+        .map(p => '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name) + ' (' + escapeHtml(p.type) + ')</option>')
+        .join("");
+      if (cur && state.providers.some(p => p.id === cur)) sel.value = cur;
+      el("pfAddBtn").disabled = !state.providers.length;
+      renderProfileModels();
+    }
+
+    function renderProfileModels() {
+      const provider = state.providers.find(p => p.id === el("pfProvider").value);
+      const sel = el("pfModel");
+      const cur = sel.value;
+      sel.innerHTML = ['<option value="">(client decides)</option>']
+        .concat((provider?.models || []).map(m => '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>'))
+        .join("");
+      if (cur) sel.value = cur;
+    }
+
+    async function addProfile() {
+      const name = el("pfName").value.trim().toLowerCase();
+      const providerId = el("pfProvider").value;
+      const model = el("pfModel").value;
+      if (!name) { setNotice("Give the profile a name — it becomes the URL segment.","bad"); return; }
+      try {
+        await api("/admin/profiles", { method:"POST", body: JSON.stringify({ name, providerId, model: model || null }) });
+        el("pfName").value = "";
+        setNotice('Profile "' + name + '" ready. Point a session at ' + location.origin + "/p/" + name +
+          " (Claude Code: ANTHROPIC_BASE_URL; Codex: base_url with /v1 on the end).", "ok");
+        await refresh();
+      } catch(err) { setNotice(err.message,"bad"); }
+    }
+
+    async function profileAction(e) {
+      const name = e.target.dataset.pfName;
+      if (!name) return;
+      if (!confirm('Remove profile "' + name + '"? Sessions still using its URL will be refused.')) return;
+      try {
+        await api("/admin/profiles", { method:"POST", body: JSON.stringify({ name, providerId: null }) });
+        setNotice('Removed profile "' + name + '".',"ok");
+        await refresh();
+      } catch(err) { setNotice(err.message,"bad"); }
+    }
+
     function renderProviders() {
       const body=el("providersBody");
       el("providerCount").textContent=state.providers.length+" providers";
@@ -518,14 +603,14 @@ export function renderAdminPage() {
 
     async function refresh() {
       try {
-        const [health, providers, activeModels, routing, modelRoutes, seenModels] = await Promise.all([
+        const [health, providers, activeModels, routing, modelRoutes, seenModels, profiles] = await Promise.all([
           api("/admin/health"), api("/admin/providers"), api("/admin/models"), api("/admin/routing"),
-          api("/admin/routing/models"), api("/admin/routing/seen"),
+          api("/admin/routing/models"), api("/admin/routing/seen"), api("/admin/profiles"),
         ]);
         state.providers=providers; state.activeModels=activeModels; state.routing=routing;
-        state.modelRoutes=modelRoutes; state.seenModels=seenModels;
+        state.modelRoutes=modelRoutes; state.seenModels=seenModels; state.profiles=profiles;
         el("healthDot").className="dot ok"; el("healthText").textContent=health.status;
-        renderRouting(); renderProviders(); renderModels(); renderActiveModels(); renderTestModels();
+        renderRouting(); renderProfiles(); renderProviders(); renderModels(); renderActiveModels(); renderTestModels();
       } catch(e) { el("healthDot").className="dot"; el("healthText").textContent="offline"; setNotice(e.message,"bad"); }
     }
 
@@ -635,11 +720,17 @@ export function renderAdminPage() {
           '<span class="status active">'+escapeHtml(r.tool)+'</span>' +
           '<span class="mono">'+escapeHtml(r.model)+'</span>' +
           '<span class="status">'+r.count+'x</span>' +
-          (r.routed ? '<span class="status ok">routed</span>' : '') +
-          '<button style="margin-left:auto" data-seen-tool="'+escapeHtml(r.tool)+'" data-seen-model="'+escapeHtml(r.model)+'">Use</button>' +
+          (r.routed
+            ? '<span class="status ok" title="An override or force route already covers this id">routed</span>'
+            : '<span class="status" title="No override for this id — it follows the tool slot">no override</span>') +
+          '<button style="margin-left:auto" data-seen-tool="'+escapeHtml(r.tool)+'" data-seen-model="'+escapeHtml(r.model)+'">Use in form</button>' +
         '</div>').join("");
     }
 
+    // Nothing is saved by clicking here — it only fills the override form above.
+    // The form is off-screen from this list, so the field is scrolled to and
+    // flashed: the global notice box lives in another card entirely and a message
+    // there reads as "nothing happened".
     function seenAction(e) {
       const btn = e.target.closest("button[data-seen-model]"); if (!btn) return;
       el("ovTool").value = btn.dataset.seenTool;
@@ -647,7 +738,13 @@ export function renderAdminPage() {
       const input = el("ovModel");
       input.value = btn.dataset.seenModel;
       input.dataset.touched = "1";
-      updateOverrideForm();
+      renderOverrides();
+      const note = el("seenNote");
+      note.style.display = "block";
+      note.textContent = 'Loaded "' + btn.dataset.seenModel + '" into the override form above (nothing saved yet) — pick the provider and its model, then press Add.';
+      input.scrollIntoView({ behavior: "smooth", block: "center" });
+      input.style.outline = "2px solid var(--accent)";
+      setTimeout(() => { input.style.outline = ""; }, 1500);
       setNotice("Loaded "+btn.dataset.seenModel+" — pick the provider and its model, then Add.","ok");
     }
 
@@ -764,6 +861,10 @@ export function renderAdminPage() {
     el("ovAll").addEventListener("change",updateOverrideForm);
     el("ovExempt").addEventListener("change",updateOverrideForm);
     el("ovModel").addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addOverride(); } });
+    el("pfAddBtn").addEventListener("click",addProfile);
+    el("profileList").addEventListener("click",profileAction);
+    el("pfProvider").addEventListener("change",renderProfileModels);
+    el("pfName").addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addProfile(); } });
     el("testProvider").addEventListener("change",updateTestModelsForProvider);
     document.querySelectorAll("[data-preset]").forEach(b=>b.addEventListener("click",()=>applyPreset(b.dataset.preset)));
     updateTypeMode(); refresh();

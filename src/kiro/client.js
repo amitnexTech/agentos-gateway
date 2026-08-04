@@ -9,7 +9,8 @@
 // the raw model id untouched. lookupModelForTool() is the only place that
 // applies Kiro aliasing, and only when the tool is actually routed to Kiro.
 
-import { getToolProvider, resolveModelRoute, fallbackProviders, getProviderModels, isOverBudget } from "../config/keysStore.js";
+import { getToolProvider, resolveModelRoute, resolveProfile, fallbackProviders, getProviderModels, isOverBudget } from "../config/keysStore.js";
+import { requestContext } from "../lib/requestContext.js";
 import { recordRequest, recordError } from "../config/usageStore.js";
 import { logRequest } from "../config/logStore.js";
 import { isFallbackEnabled } from "../config/keysStore.js";
@@ -70,6 +71,10 @@ export function kiroModelCandidates(model) {
 // Look up the provider bound to a tool for the given model id, applying Kiro
 // alias resolution only when the tool is routed to a Kiro provider.
 //
+// Resolution order: an `exempt` entry, then the request's session profile
+// (keysStore "Session profiles" — the /p/<name>/v1 prefix), then a per-model
+// override (keysStore modelRoutes), then the tool's own slot.
+//
 // A per-model override (keysStore modelRoutes) wins over the tool's default
 // provider — that is how a cheap background model gets kept off an expensive
 // account without moving the whole tool. An override may also carry the upstream
@@ -91,14 +96,21 @@ export function kiroModelCandidates(model) {
 // used to live in each route's Kiro branch is gone (#171 item 4).
 export function lookupModelForTool(tool, rawModel) {
   const route = resolveModelRoute(tool, rawModel);
+  // A session profile (the /p/<name>/v1 base URL this request came in on) beats
+  // the global model routes — that is what lets parallel sessions run different
+  // models. An explicit `exempt` entry still wins, because those exist to keep
+  // Claude Code's auto-mode/subagent classifier ids on a provider that serves
+  // them; a profile that forced those onto one pinned model would break auto mode.
+  const session = route?.exempt ? null : resolveProfile(requestContext().profile);
   // `exempt` means this model id is opted out of a force route: tool's own
   // provider, client's own id. Claude Code's subagent/auto-mode classifier
   // models need that, or auto mode breaks.
-  const forced = route && !route.exempt ? route : null;
+  const forced = session || (route && !route.exempt ? route : null);
   const bound = forced?.provider || getToolProvider(tool);
   if (!bound || bound.enabled === false) return { provider: null, model: rawModel };
   // An override's target id is deliberate, so it is what Kiro gets gated on too.
-  const wanted = forced ? forced.model : rawModel;
+  // A profile with no model pinned forwards the client's own id.
+  const wanted = forced ? forced.model || rawModel : rawModel;
 
   // Kiro is strict: only forward ids configured on the bound Kiro provider
   // (after peeling the decorations clients add). An unmatched id is rejected (404).

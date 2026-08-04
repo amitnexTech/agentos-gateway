@@ -5,6 +5,7 @@ A unified AI API gateway that routes Claude Code, Codex, and any OpenAI/Anthropi
 ## Features
 
 - **Per-tool routing** — Claude Code, Codex, and OpenAI tools each independently routed to any provider
+- **Per-session models** — start a session with `http://localhost:9000/p/<profile>` as its base URL and it runs that profile's provider and model, so parallel sessions can use different models at once (backend on Opus, frontend on Kimi, docs on Sonnet)
 - **Protocol bridge** — OpenAI Chat Completions and Anthropic Messages are translated both ways, so any provider can serve any tool: Codex on an Anthropic-format provider, Claude Code on Groq/OpenRouter/Ollama
 - **Credit budgets** — a Kiro account past its budget stops serving (HTTP 402) instead of quietly spending past it
 - **Model verification** — detects if a provider responds with a different model than requested

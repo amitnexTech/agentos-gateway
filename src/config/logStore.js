@@ -126,6 +126,7 @@ export function logRequest({ tool, rawModel, model, providerId, providerName, la
   const entry = {
     ts: new Date().toISOString(),
     tool,
+    profile: requestContext().profile || null,
     rawModel: rawModel && rawModel !== model ? rawModel : null,
     model,
     providerId,
@@ -164,6 +165,7 @@ export function logRequest({ tool, rawModel, model, providerId, providerName, la
   appendSpend({
     ts: entry.ts,
     tool,
+    profile: entry.profile,
     project: ctx.project || null,
     client: ctx.client || null,
     provider: providerName || null,

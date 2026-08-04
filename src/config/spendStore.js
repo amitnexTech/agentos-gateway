@@ -106,8 +106,8 @@ function readRows() {
  * @param {object} [options]
  * @param {string} [options.month] - "YYYY-MM"; defaults to every row. "all" is the
  *   same as omitting it.
- * @returns {object} { month, months, totals, byProject, byProvider, byModel, byTool,
- *   byClient, byDay, firstSeen, lastSeen }
+ * @returns {object} { month, months, totals, byProject, byProfile, byProvider, byModel,
+ *   byTool, byClient, byDay, firstSeen, lastSeen }
  */
 export function getSpend({ month } = {}) {
   const rows = readRows();
@@ -121,6 +121,7 @@ export function getSpend({ month } = {}) {
     months,
     totals: emptyBucket(),
     byProject: {},
+    byProfile: {},
     byProvider: {},
     byModel: {},
     byTool: {},
@@ -133,6 +134,7 @@ export function getSpend({ month } = {}) {
   for (const row of scoped) {
     add(result.totals, row);
     intoGroup(result.byProject, row.project, row);
+    intoGroup(result.byProfile, row.profile, row);
     intoGroup(result.byProvider, row.provider, row);
     intoGroup(result.byModel, row.model, row);
     intoGroup(result.byTool, row.tool, row);

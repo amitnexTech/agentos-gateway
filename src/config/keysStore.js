@@ -14,8 +14,10 @@ export function keysPath() {
   return join(dataDir(), "keys.json");
 }
 
+const EMPTY = { providers: [], models: [], routing: {}, modelRoutes: {}, profiles: {} };
+
 function readAll() {
-  if (!existsSync(keysPath())) return { providers: [], models: [], routing: {}, modelRoutes: {} };
+  if (!existsSync(keysPath())) return { ...EMPTY };
   try {
     const parsed = JSON.parse(readFileSync(keysPath(), "utf8"));
     return {
@@ -23,9 +25,10 @@ function readAll() {
       models: Array.isArray(parsed.models) ? parsed.models : [],
       routing: parsed.routing || {},
       modelRoutes: parsed.modelRoutes || {},
+      profiles: parsed.profiles || {},
     };
   } catch {
-    return { providers: [], models: [], routing: {}, modelRoutes: {} };
+    return { ...EMPTY };
   }
 }
 
@@ -264,6 +267,74 @@ export function setModelRoute(tool, modelId, route) {
   return data.modelRoutes;
 }
 
+// --- Session profiles (per-session provider + model) -------------------
+// profiles = { backend: { providerId: "provider-x", model: "claude-opus-4.5" } }
+//
+// WHY. Everything above is keyed by tool slot and model id, both of which are
+// GLOBAL: bind the claude slot to an account, or set its force route, and every
+// Claude Code session on the machine follows it. That makes parallel work
+// impossible — backend on Opus while the frontend session runs Kimi and a third
+// writes docs on Sonnet is exactly what could not be expressed.
+//
+// A profile is that same "force route" pairing, scoped to a session instead of to
+// the whole gateway. The session picks it by BASE URL, because base URL is the one
+// setting every client already has:
+//
+//   ANTHROPIC_BASE_URL=http://localhost:9000/p/backend      (Claude Code)
+//   base_url = "http://localhost:9000/p/docs/v1"            (Codex)
+//
+// Verified against Claude Code 2.1.220: it appends its own path, so the gateway
+// receives POST /p/backend/v1/messages?beta=true.
+//
+// Selecting by URL rather than by model id is deliberate — it covers ALL traffic
+// from that process, including the background calls (topic detection, the subagent
+// and auto-mode classifier ids) that a model-id-keyed rule cannot follow.
+//
+// A profile is flat, not per-tool: one session is one client, so one pairing is
+// all it can use. `model` is optional — omit it to pin only the account and let
+// the client's own model id through.
+
+const PROFILE_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+export function getProfiles() {
+  return readAll().profiles;
+}
+
+export function getProfile(name) {
+  if (!name || !PROFILE_NAME.test(name)) return null;
+  return readAll().profiles[name] || null;
+}
+
+// Resolve a profile to { provider, model } — `model` being what to send upstream,
+// or null to forward the client's own id. Returns null when the profile does not
+// exist or its provider is gone/disabled; app.js refuses the request in that case
+// rather than letting it fall through to the global routing, because silently
+// serving a session from the wrong account is a billing mistake.
+export function resolveProfile(name) {
+  const profile = getProfile(name);
+  if (!profile?.providerId) return null;
+  const provider = readAll().providers.find((p) => p.id === profile.providerId);
+  if (!provider || provider.enabled === false) return null;
+  return { provider, model: profile.model || null };
+}
+
+// setProfile(name, { providerId, model? }) writes; setProfile(name, null) deletes.
+export function setProfile(name, profile) {
+  if (!PROFILE_NAME.test(String(name || ""))) return null;
+  const data = readAll();
+  if (!profile) {
+    delete data.profiles[name];
+  } else {
+    if (!data.providers.some((p) => p.id === profile.providerId)) return null;
+    data.profiles[name] = {
+      providerId: profile.providerId,
+      ...(profile.model ? { model: profile.model } : {}),
+    };
+  }
+  writeAll(data);
+  return data.profiles;
+}
+
 // --- Auto-fallback (default OFF) ---------------------------------------
 // When the user opts in (routing.fallbackEnabled === true), a retriable
 // upstream error on a tool's bound provider retries the same request on
@@ -364,6 +435,11 @@ export function deleteProvider(id) {
   }
   data.providers = data.providers.filter((p) => p.id !== id);
   data.models = data.models.filter((m) => m.providerId !== id);
+  // Same reason as the overrides above: a session profile naming a deleted
+  // provider would refuse every request from that session with no clue why.
+  for (const [name, profile] of Object.entries(data.profiles)) {
+    if (profile?.providerId === id) delete data.profiles[name];
+  }
   writeAll(data);
 }
 
@@ -444,5 +520,6 @@ export function replace(newData) {
     models: Array.isArray(newData.models) ? newData.models : [],
     routing: newData.routing || {},
     modelRoutes: newData.modelRoutes || {},
+    profiles: newData.profiles || {},
   });
 }

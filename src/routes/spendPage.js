@@ -116,6 +116,7 @@ export function renderSpendPage() {
       '</div>' +
       '<div class="panels">' +
         breakdown("By project", data.byProject, { keyLabel: "Project", sortBy: "totalTokens" }) +
+        breakdown("By session profile", data.byProfile, { keyLabel: "Profile", sortBy: "totalTokens", showCredits: true }) +
         breakdown("By provider", data.byProvider, { keyLabel: "Provider", sortBy: "totalTokens", showCredits: true }) +
         breakdown("By model", data.byModel, { keyLabel: "Model", sortBy: "totalTokens", showCredits: true }) +
         breakdown("By tool", data.byTool, { keyLabel: "Tool", sortBy: "totalTokens" }) +

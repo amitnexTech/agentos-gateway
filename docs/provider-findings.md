@@ -24,6 +24,13 @@ Repriced within 2 months of launch: Ultra went from ~₹9,550 with $200/5h + $14
 
 **Note:** the Lumosel and Aerolink dashboards are structurally near-identical (same six plan names, same window model, the same "4.8 and 4.6 model routes" string, Telegram verification). Likely the same white-label panel, so redundancy across them is operator-level only, not upstream-level.
 
+## Kimi K3 (`moonshotai/kimi-k3-free` via the `token router` provider, anthropic-compat)
+
+- **Thinking cannot be turned off.** `thinking: {"type":"disabled"}` — which Claude Code sends whenever thinking is off for a model — is answered `400 Kimi K3 always has thinking enabled`. Measured 2026-08-04 across three curl variants on the live provider: field absent → 200, `disabled` → 400, `{"type":"enabled", budget_tokens}` → 200. In the request log this showed up as `claude-opus-5` failing while `claude-fable-5` succeeded *on the same upstream model*, because the two Claude Code roles differed in whether thinking was on.
+- The gateway now strips a `{"type":"disabled"}` thinking block before forwarding (`src/routes/anthropic.js`). Omitting the field is what "no extended thinking" means to the Anthropic API anyway, so this is neutral for a real Anthropic provider and makes the always-thinking ones usable. An `enabled` block is a real instruction and is passed through untouched.
+- **Every reply contains thinking blocks, and the budget is spent on them first.** With `max_tokens: 32` the reply was a thinking block *and nothing else*, `stop_reason: max_tokens` — no answer text at all. Anything that sends a small token budget (Claude Code's own background calls: topic detection, the auto-mode classifier) can therefore come back empty even though the request succeeded. Treat Kimi K3 as usable for deliberate, generously-budgeted turns, not as a drop-in primary model for an agent.
+- The `signature` on those thinking blocks is the provider's own message id, not a real Anthropic signature. Replaying it in a later turn is untested.
+
 ## Evaluation tooling
 
 ```bash

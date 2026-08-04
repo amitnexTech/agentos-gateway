@@ -599,7 +599,7 @@ globalThis.fetch = async (input, init) => {
   return realFetch(input, init);
 };
 
-function writeConfig({ routing, kiro = {}, fallbackEnabled = false }) {
+function writeConfig({ routing, kiro = {}, fallbackEnabled = false, profiles = {} }) {
   writeFileSync(
     join(dataDir, "keys.json"),
     JSON.stringify({
@@ -617,6 +617,7 @@ function writeConfig({ routing, kiro = {}, fallbackEnabled = false }) {
       ],
       routing: { ...routing, ...(fallbackEnabled ? { fallbackEnabled: true } : {}) },
       modelRoutes: {},
+      profiles,
     }, null, 2),
     { mode: 0o600 }
   );
@@ -786,6 +787,86 @@ await check("every dashboard page's inline script parses", async () => {
   }
 });
 
+console.log("\nsession profiles (per-session routing by base URL)");
+
+// The whole point: three sessions, ONE gateway, one model id, three destinations.
+// A single-slot gateway could not express this — that is what profiles fix.
+await check("profiles: parallel sessions on the same model id reach different providers", async () => {
+  writeConfig({
+    routing: { claude: "prov-anth", codex: "prov-anth", openai: "prov-anth" },
+    profiles: {
+      backend: { providerId: "prov-kiro", model: "claude-sonnet-4.5" },
+      frontend: { providerId: "prov-oai", model: "gpt-5.6" },
+      loose: { providerId: "prov-oai" },
+    },
+  });
+  const body = { ...ANTHROPIC_REQUEST, model: "claude-sonnet-5" };
+
+  assert.equal((await post("/p/backend/v1/messages", body)).status, 200);
+  assert.ok(received.at(-1).path.includes("kiro.dev"), "the backend session must reach Kiro");
+
+  received.length = 0;
+  assert.equal((await post("/p/frontend/v1/messages", body)).status, 200);
+  assert.equal(received.at(-1).path, "/v1/chat/completions", "the frontend session must reach the OpenAI-format provider");
+  assert.equal(received.at(-1).body.model, "gpt-5.6", "…renamed to what that provider serves");
+
+  received.length = 0;
+  assert.equal((await post("/p/loose/v1/messages", body)).status, 200);
+  assert.equal(received.at(-1).body.model, "claude-sonnet-5", "a profile with no model pinned forwards the client's id");
+
+  received.length = 0;
+  assert.equal((await post("/v1/messages", body)).status, 200);
+  assert.equal(received.at(-1).path, "/v1/messages", "un-prefixed traffic still follows the global slot");
+});
+
+await check("profiles: a bad profile is refused, never served from the default account", async () => {
+  writeConfig({
+    routing: { claude: "prov-anth" },
+    profiles: { dead: { providerId: "prov-missing", model: "x" } },
+  });
+  const body = { ...ANTHROPIC_REQUEST, model: "claude-sonnet-5" };
+
+  const unknown = await post("/p/typo/v1/messages", body);
+  assert.equal(unknown.status, 404);
+  assert.match((await unknown.json()).error.message, /Unknown routing profile "typo"/);
+  assert.equal(received.length, 0, "a typo must not spend anything upstream");
+
+  const dead = await post("/p/dead/v1/messages", body);
+  assert.equal(dead.status, 404);
+  assert.match((await dead.json()).error.message, /missing or disabled/);
+  assert.equal(received.length, 0);
+});
+
+await check("profiles: the log and the permanent spend record name the profile", async () => {
+  const auth = "Basic " + Buffer.from("any:test-token").toString("base64");
+  writeConfig({ routing: { claude: "prov-anth" }, profiles: { docs: { providerId: "prov-oai", model: "gpt-5.6" } } });
+  assert.equal((await post("/p/docs/v1/messages", { ...ANTHROPIC_REQUEST, model: "claude-sonnet-5" })).status, 200);
+
+  const { getLogs } = await import("../src/config/logStore.js");
+  assert.equal(getLogs({ limit: 1 })[0].profile, "docs", "otherwise the log cannot say which session spent this");
+
+  const spend = await (await fetch(`${base}/admin/spend/data`, { headers: { Authorization: auth } })).json();
+  assert.ok(spend.byProfile.docs?.requests >= 1, "monthly spend must be answerable per session type");
+});
+
+await check("profiles: the admin API creates, lists and clears them", async () => {
+  const auth = "Basic " + Buffer.from("any:test-token").toString("base64");
+  const save = (body) =>
+    fetch(`${base}/admin/profiles`, {
+      method: "POST",
+      headers: { Authorization: auth, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const list = async () => (await fetch(`${base}/admin/profiles`, { headers: { Authorization: auth } })).json();
+
+  assert.equal((await save({ name: "api-made", providerId: "prov-oai", model: "gpt-5.6" })).status, 200);
+  assert.equal((await list())["api-made"].model, "gpt-5.6");
+  assert.equal((await save({ name: "bad name", providerId: "prov-oai" })).status, 400, "the name is a URL segment");
+  assert.equal((await save({ name: "ghost", providerId: "nope" })).status, 404, "unknown provider");
+  assert.equal((await save({ name: "api-made", providerId: null })).status, 200);
+  assert.equal((await list())["api-made"], undefined);
+});
+
 console.log("\nnative passthrough (no bridge) — regression check");
 
 writeFileSync(
@@ -820,6 +901,29 @@ await check("messages -> anthropic-compat stays a byte-for-byte passthrough", as
   const body = await res.json();
   assert.equal(body.id, "msg_bridge_1");
   assert.equal(body.content.length, 3, "thinking block must survive the passthrough");
+});
+
+await check("messages: a disabled thinking block is not forwarded (some providers reject it)", async () => {
+  // Claude Code sends `thinking: {type:"disabled"}` when thinking is off. Omitting
+  // it means the same thing to Anthropic, but a router serving Kimi K3 answers
+  // 400 "Kimi K3 always has thinking enabled" — measured on the real provider
+  // 2026-08-04, and the same request without the field succeeds.
+  const res = await post("/v1/messages", {
+    ...ANTHROPIC_REQUEST,
+    model: "claude-sonnet-5",
+    thinking: { type: "disabled" },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(received.at(-1).body.thinking, undefined, "the disabled block must be stripped");
+
+  // An ENABLED block is a real instruction and must survive untouched.
+  const enabled = await post("/v1/messages", {
+    ...ANTHROPIC_REQUEST,
+    model: "claude-sonnet-5",
+    thinking: { type: "enabled", budget_tokens: 1024 },
+  });
+  assert.equal(enabled.status, 200);
+  assert.deepEqual(received.at(-1).body.thinking, { type: "enabled", budget_tokens: 1024 });
 });
 
 await check("messages -> anthropic-compat streaming passthrough is unchanged", async () => {

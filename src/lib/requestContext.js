@@ -15,6 +15,21 @@ export function requestContext() {
   return storage.getStore() || {};
 }
 
+// Tag the current request with the session profile taken from its URL prefix
+// (/p/<name>/v1/...). Mutating the store is deliberate: the profile is only known
+// after express has matched the mount path, which is after the middleware below
+// has already opened the context.
+export function tagProfile(name) {
+  const store = storage.getStore();
+  if (store) store.profile = name;
+}
+
+// Run `fn` inside a context — for tests and for anything that needs to simulate a
+// request without one.
+export function runWithContext(ctx, fn) {
+  return storage.run({ ...ctx }, fn);
+}
+
 /**
  * Which project a request belongs to. Attribution is best-effort by design: an
  * unattributed request is recorded as "unknown" rather than guessed at, and the
@@ -70,5 +85,5 @@ export function clientFromRequest(req) {
 
 export function requestContextMiddleware(req, res, next) {
   // express's body parser has already run, so the body-based signals are available.
-  storage.run({ project: projectFromRequest(req), client: clientFromRequest(req) }, next);
+  storage.run({ project: projectFromRequest(req), client: clientFromRequest(req), profile: null }, next);
 }

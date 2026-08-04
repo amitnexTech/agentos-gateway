@@ -27,6 +27,17 @@ anthropicRouter.post("/messages", async (req, res, next) => {
   let provider, model;
   const requestStart = Date.now(); // for the error path: a failed request still took time
 
+  // Claude Code sends `thinking: { type: "disabled" }` when the user turns
+  // thinking off for a model. Omitting the field means exactly the same thing to
+  // the Anthropic API (extended thinking is opt-in), but some providers reject the
+  // explicit disable instead of ignoring it: measured 2026-08-04, a router serving
+  // Kimi K3 answers `400 Kimi K3 always has thinking enabled` — the same request
+  // with the field absent succeeds. Dropping it is semantically neutral for a real
+  // Anthropic provider and keeps the always-thinking ones usable.
+  const clientBody = req.body?.thinking?.type === "disabled"
+    ? (({ thinking, ...rest }) => rest)(req.body)
+    : req.body;
+
   try {
     if (!rawModel) throw new ApiError(400, "Missing 'model' in request body");
 
@@ -57,7 +68,7 @@ anthropicRouter.post("/messages", async (req, res, next) => {
 
     // --- Kiro provider: translate Anthropic → Kiro protocol ---
     if (provider.type === "kiro") {
-      const kiroPayload = anthropicToKiro({ ...req.body, model });
+      const kiroPayload = anthropicToKiro({ ...clientBody, model });
       // Kiro reports no input token count, but input IS the cost there (full
       // history is re-sent every turn). Measure what we send so the log shows it.
       const { inputTokens, historyEntries, payloadChars } = measureKiroPayload(kiroPayload);
@@ -96,7 +107,7 @@ anthropicRouter.post("/messages", async (req, res, next) => {
 
     // --- Standard provider: passthrough for anthropic-compat, bridged for OpenAI ---
     const { upstream, startTime, provider: served, adapter: servedAdapter, fallback } = await callUpstreamWithFallback({
-      adapter, body: { ...req.body, model }, model, rawModel, tool: "claude", provider,
+      adapter, body: { ...clientBody, model }, model, rawModel, tool: "claude", provider,
       anthropicVersion: req.headers["anthropic-version"],
       speaks: "anthropic-messages",
     });

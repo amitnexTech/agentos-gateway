@@ -22,10 +22,15 @@ const {
   getToolProvider,
   setModelRoute,
   resolveModelRoute,
+  setProfile,
+  getProfiles,
+  resolveProfile,
+  deleteProvider,
   fallbackProviders,
   isOverBudget,
   getRouting,
 } = await import("../src/config/keysStore.js");
+const { runWithContext } = await import("../src/lib/requestContext.js");
 
 const PROVIDERS = [
   { id: "p-anth", name: "Anth", type: "anthropic-compat", baseUrl: "https://a.example/v1", enabled: true },
@@ -36,10 +41,10 @@ const PROVIDERS = [
   { id: "p-off", name: "Disabled", type: "anthropic-compat", baseUrl: "https://d.example/v1", enabled: false },
 ];
 
-function seed({ routing = {}, modelRoutes = {} } = {}) {
+function seed({ routing = {}, modelRoutes = {}, profiles = {} } = {}) {
   writeFileSync(
     join(dataDir, "keys.json"),
-    JSON.stringify({ providers: PROVIDERS, models: [], routing, modelRoutes }, null, 2),
+    JSON.stringify({ providers: PROVIDERS, models: [], routing, modelRoutes, profiles }, null, 2),
     { mode: 0o600 }
   );
 }
@@ -192,4 +197,78 @@ test("routing survives a round trip through keys.json", () => {
   seed();
   setToolProvider("codex", "p-kiro");
   assert.equal(getRouting().codex, "p-kiro");
+});
+
+
+// --- Session profiles ---------------------------------------------------
+// The reason these exist: the rules above are global, so every session on the
+// machine shared one model. A profile is per-session (chosen by the /p/<name>/v1
+// base URL), which is what makes parallel sessions on different models possible.
+
+test("a session profile pins provider and model, beating the force route", async () => {
+  seed({
+    routing: { claude: "p-anth" },
+    modelRoutes: { claude: { "*": { providerId: "p-anth", model: "globally-forced" } } },
+    profiles: { backend: { providerId: "p-oai", model: "gpt-5.6" } },
+  });
+  const { lookupModelForTool } = await import("../src/kiro/client.js");
+
+  const inSession = runWithContext({ profile: "backend" }, () => lookupModelForTool("claude", "claude-opus-5"));
+  assert.equal(inSession.provider.id, "p-oai");
+  assert.equal(inSession.model, "gpt-5.6");
+
+  // Another session, same gateway, same instant: still the global force route.
+  const noSession = runWithContext({ profile: null }, () => lookupModelForTool("claude", "claude-opus-5"));
+  assert.equal(noSession.provider.id, "p-anth");
+  assert.equal(noSession.model, "globally-forced");
+});
+
+test("a profile with no model pinned forwards the client's own id", async () => {
+  seed({ routing: { claude: "p-anth" }, profiles: { loose: { providerId: "p-oai" } } });
+  const { lookupModelForTool } = await import("../src/kiro/client.js");
+  const r = runWithContext({ profile: "loose" }, () => lookupModelForTool("claude", "whatever-5"));
+  assert.equal(r.provider.id, "p-oai");
+  assert.equal(r.model, "whatever-5", "pin the account only");
+});
+
+test("an exempt model id stays on the slot even inside a profile", async () => {
+  // Claude Code's auto-mode classifier ids must keep reaching a provider that
+  // serves them; a profile forcing them onto one pinned model breaks auto mode.
+  seed({
+    routing: { claude: "p-anth" },
+    modelRoutes: { claude: { "claude-sonnet-5[1M]": { exempt: true } } },
+    profiles: { backend: { providerId: "p-oai", model: "gpt-5.6" } },
+  });
+  const { lookupModelForTool } = await import("../src/kiro/client.js");
+  const r = runWithContext({ profile: "backend" }, () => lookupModelForTool("claude", "claude-sonnet-5[1M]"));
+  assert.equal(r.provider.id, "p-anth");
+  assert.equal(r.model, "claude-sonnet-5[1M]");
+});
+
+test("a profile resolves to nothing when it is unknown, misnamed, or its provider is unusable", () => {
+  seed({ profiles: { dead: { providerId: "p-off" }, gone: { providerId: "p-gone" }, ok: { providerId: "p-anth" } } });
+  assert.equal(resolveProfile("nope"), null);
+  assert.equal(resolveProfile("dead"), null, "disabled provider");
+  assert.equal(resolveProfile("gone"), null, "deleted provider");
+  assert.equal(resolveProfile("../etc"), null, "the name is a URL segment, so it is validated");
+  assert.equal(resolveProfile(null), null);
+  assert.equal(resolveProfile("ok").provider.id, "p-anth");
+});
+
+test("setProfile validates the name and the provider", () => {
+  seed();
+  assert.equal(setProfile("Backend", { providerId: "p-anth" }), null, "uppercase is not a URL-safe segment here");
+  assert.equal(setProfile("a/b", { providerId: "p-anth" }), null);
+  assert.equal(setProfile("x".repeat(33), { providerId: "p-anth" }), null);
+  assert.equal(setProfile("ok", { providerId: "p-nope" }), null, "unknown provider");
+  assert.deepEqual(setProfile("docs", { providerId: "p-anth", model: "claude-sonnet-5" }), {
+    docs: { providerId: "p-anth", model: "claude-sonnet-5" },
+  });
+  assert.deepEqual(setProfile("docs", null), {}, "clearing removes it");
+});
+
+test("deleting a provider takes its profiles with it", () => {
+  seed({ profiles: { backend: { providerId: "p-oai", model: "gpt-5.6" }, docs: { providerId: "p-anth" } } });
+  deleteProvider("p-oai");
+  assert.deepEqual(Object.keys(getProfiles()), ["docs"], "a profile naming a dead provider refuses every request");
 });

@@ -210,6 +210,10 @@ Caveat: an exact override keys on the model id alone, so if a client's *main* mo
 
 `getEnabledModels()` (used by `GET /v1/models`) unions the model lists of whichever providers are currently assigned to any of the three routing slots **or reachable through a per-model override** — a model not bound to any active provider is invisible to that endpoint even if some other, unrouted provider supports it.
 
+### Session profiles (per-session, not per-gateway)
+
+Both mechanisms above are global: every session on the machine follows the same slot and the same force route. A **session profile** is that pairing scoped to one session, selected by the base URL the session was started with (`ANTHROPIC_BASE_URL=http://localhost:9000/p/backend`), which is what makes parallel sessions on different models possible. It resolves inside the same `lookupModelForTool()` funnel, above `modelRoutes` and below `exempt`. See [[session-profiles]].
+
 ## Upstream execution: `callUpstream` / `callUpstreamWithFallback`
 
 All three protocol routes funnel their actual upstream HTTP call through `src/lib/proxyExecute.js` rather than calling `fetch` inline — this is shared plumbing, not per-route logic:
@@ -261,6 +265,7 @@ Reading tools from only the old shape is what left Codex able to chat but unable
 - [[index]]
 - [[kiro-integration]]
 - [[codex-integration]]
+- [[session-profiles]]
 - [[security]]
 - [[cost-and-context]]
 - [[fallback-and-verification]]

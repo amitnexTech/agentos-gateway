@@ -27,7 +27,7 @@ The write happens inside `logRequest()`, so **every** route and both the success
 
 | surface | what it gives |
 |---|---|
-| `/admin/spend` | month picker, totals cards, and breakdowns by project / provider / model / tool / client / day |
+| `/admin/spend` | month picker, totals cards, and breakdowns by project / session profile / provider / model / tool / client / day |
 | `GET /admin/spend/data?month=YYYY-MM` | the same aggregates as JSON (omit `month`, or pass `all`, for everything) |
 | `data/spend.jsonl` | the raw record, one JSON object per line — grep-able, no tooling needed |
 
@@ -42,6 +42,8 @@ The gateway is not told which project a request belongs to, so it reads it out o
 3. **Claude Code** carries an environment block in its system prompt with `Working directory: /abs/path`.
 
 The project is resolved **once per request** by a middleware and read back through `AsyncLocalStorage` (stdlib `node:async_hooks`). `logRequest` is called from 17 places, several of them deep in `kiro/client.js` and `lib/proxyExecute.js` which have no `req` in scope — threading an argument through all of them would have been a lot of noise for one field.
+
+The same context also carries the **session profile** the request arrived on, when it came in through a `/p/<name>/v1` base URL. Unlike the project, that one is not a heuristic — the session named it explicitly — so `byProfile` answers "what did the backend sessions cost this month" exactly. See [[session-profiles]].
 
 ## What the numbers claim
 
