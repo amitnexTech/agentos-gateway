@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { PassThrough } from "node:stream";
-import { getEnabledModels, toolSupportsProviderType, supportedTypesForTool } from "../config/keysStore.js";
+import { reachableModels, toolSupportsProviderType, supportedTypesForTool } from "../config/keysStore.js";
+import { requestContext, toolFromRequest } from "../lib/requestContext.js";
 import { lookupModelForTool, executeKiroWithFallback } from "../kiro/client.js";
 import { anthropicToKiro } from "../kiro/converter.js";
 import { measureKiroPayload } from "../kiro/tokens.js";
@@ -15,10 +16,17 @@ import { ApiError } from "../lib/errors.js";
 
 export const proxyRouter = Router();
 
-proxyRouter.get("/models", (_req, res) => {
+proxyRouter.get("/models", (req, res) => {
+  // Per CALLER, not per gateway: a Claude Code client used to be told about the
+  // models of whatever provider the codex/openai slots were using. See
+  // keysStore.reachableModels for why this does not narrow under a force route.
+  const ids = reachableModels({
+    tool: toolFromRequest(req),
+    profile: requestContext().profile,
+  });
   res.json({
     object: "list",
-    data: getEnabledModels().map((id) => ({ id, object: "model" })),
+    data: ids.map((id) => ({ id, object: "model" })),
   });
 });
 

@@ -83,6 +83,20 @@ export function clientFromRequest(req) {
   return String(ua).split(/\s+/)[0].slice(0, 60);
 }
 
+// Which tool slot a request belongs to. The three protocol POST routes know this
+// from their own path; GET /v1/models does NOT — it is one endpoint shared by all
+// three, so the only signal is who is asking. Used to answer "which models can I
+// reach" per caller instead of listing every slot's models (keysStore
+// reachableModels). A client we do not recognise returns null and gets the union,
+// which is a superset rather than a wrong guess.
+export function toolFromRequest(req) {
+  const ua = String(req.headers?.["user-agent"] || "").toLowerCase();
+  if (!ua) return null;
+  if (ua.includes("claude")) return "claude";
+  if (ua.includes("codex")) return "codex";
+  return null;
+}
+
 export function requestContextMiddleware(req, res, next) {
   // express's body parser has already run, so the body-based signals are available.
   storage.run({ project: projectFromRequest(req), client: clientFromRequest(req), profile: null }, next);

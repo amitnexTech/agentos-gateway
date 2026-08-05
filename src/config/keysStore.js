@@ -335,6 +335,50 @@ export function setProfile(name, profile) {
   return data.profiles;
 }
 
+// --- Which models a CALLER can actually reach ------------------------------
+// getEnabledModels() above answers "every model any slot can reach", which is the
+// right answer for the dashboard and the wrong one for a client: /v1/models is
+// shared by all three protocol routes, so a Claude Code client was being told
+// about the models of whatever provider the codex/openai slots happened to use.
+// Measured on Amit's config: 12 ids advertised, 11 of them owned only by the
+// codex/openai slot's provider and unreachable on /v1/messages.
+//
+// Narrowing is deliberately NOT applied when a force route is active, and that is
+// not laziness: with a force route every id the client sends is rewritten to the
+// forced model, so every id genuinely IS accepted and a shorter list would be the
+// less truthful one. It would also be risky — Claude Code checks its configured
+// model against this endpoint, so dropping the id it is about to send can make it
+// refuse before a request is ever made.
+//
+// Where it does narrow, it matters: with "(client decides)" the client's own id is
+// what goes upstream, so an id the slot provider does not serve is a 403/404 from
+// the provider. That is exactly when an honest list stops a broken choice.
+export function reachableModels({ tool, profile } = {}) {
+  // A session profile is the most specific answer there is: one provider, and one
+  // model when it pins one.
+  if (profile) {
+    const resolved = resolveProfile(profile);
+    if (!resolved) return [];
+    return resolved.model ? [resolved.model] : getProviderModels(resolved.provider.id);
+  }
+
+  // An unrecognised client gets the old union — better a superset than a wrong
+  // guess about which route it meant to use.
+  if (!TOOL_SLOTS.includes(tool)) return getEnabledModels();
+
+  const data = readAll();
+  const routes = data.modelRoutes?.[tool] || {};
+  if (routes[WILDCARD]) return getEnabledModels(); // force route: everything is accepted
+
+  const ids = new Set();
+  const slot = getToolProvider(tool);
+  if (slot && slot.enabled !== false) for (const id of getProviderModels(slot.id)) ids.add(id);
+  // A per-model override makes the client's id reachable even when the slot
+  // provider knows nothing about it.
+  for (const id of Object.keys(routes)) ids.add(id);
+  return [...ids];
+}
+
 // --- Auto-fallback (default OFF) ---------------------------------------
 // When the user opts in (routing.fallbackEnabled === true), a retriable
 // upstream error on a tool's bound provider retries the same request on

@@ -108,7 +108,7 @@ Hard rule for every pairing: never answer HTTP 200 with an empty body. An
 untranslatable client field is a 400 with nothing sent upstream; an unusable
 upstream reply (no content blocks, no `choices`, a non-JSON 200) is a 502 naming
 the provider; a stream that carried nothing ends in an explicit error event and
-is logged as an error. Verify with `node scripts/bridge-verify.mjs` (36 checks,
+is logged as an error. Verify with `node scripts/bridge-verify.mjs` (37 checks,
 fake upstreams) and `node scripts/bridge-live-probe.mjs` (real provider).
 
 ## Codex wire format (`/v1/responses`)
@@ -141,16 +141,18 @@ class: the model looks uncooperative instead of the request looking broken.
 2. **Session profiles** — per-SESSION provider+model, selected by the base URL a session starts with (`ANTHROPIC_BASE_URL=http://localhost:9000/p/backend`), so parallel sessions run different models: backend on Opus, frontend on Kimi, docs on Sonnet, one gateway. `profiles` in `keys.json`, mounted in `app.js`, resolved in `lookupModelForTool` above `modelRoutes` and below `exempt`; an unknown or broken profile is a 404, never a silent fall-through to the global routing. Un-prefixed `/v1` traffic is unchanged.
 3. **Protocol bridge** — OpenAI Chat Completions <-> Anthropic Messages translated both ways (`src/lib/protocolBridge.js`), so every provider type serves every route: Codex on Anthropic providers, Claude Code on Groq/OpenRouter/Ollama, Kiro on `/v1/chat/completions`
 4. **Kiro credit budget enforcement** — an account past its `creditBudget` is refused with 402 before spending, and auto-fallback hands over to an account with room
-5. **Per-model routes + force route** — one model id can go to a different provider than its tool's slot, optionally renamed upstream (`claude-sonnet-5` → aeorlink as `claude-sonnet-4-5-20250929`); `"*"` forces every model onto one target so the dashboard decides what actually runs, and `exempt` keeps a model id out of that force route (dashboard: Routing → Model overrides; API: `GET`/`POST /admin/routing/models`)
-6. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
-7. **Token tracking** — input/output/cache_read/cache_write per request; Kiro rows are marked `~` because Kiro reports no token counts at all (estimate at ~4 chars/token)
-8. **Cost estimation** — approximate $ per request at Anthropic list rates for known Claude families; an unrecognised model shows `—` rather than a guessed price
-9. **Model alias mapping** — Claude Code dated names auto-resolved (claude-sonnet-4-20250514 → claude-sonnet-4.5)
-10. **Auto /v1 detection** — base URL auto-corrected if user doesn't add /v1
-11. **Enable/Disable** — per-provider toggle, disabled providers don't route
-12. **Manual model add** — when /models endpoint fails, add models manually
-13. **Request logs** — live log page with latency, tokens, cost, model verification, and the session profile that served each request
-14. **Spend tracking** — permanent append-only record (`data/spend.jsonl`, written from `logRequest`), monthly totals by project / session profile / provider / model / tool / client at `/admin/spend`; project attribution from Codex's workspace metadata, Claude Code's working directory, or an `x-agentos-project` header
+5. **Force route is a toggle** — a slot's *Model* dropdown either pins one model for all traffic (client's `/model` ignored) or is set to *(client decides)*, which forwards the client's own id to the slot provider. The dashboard now states which mode is live, and warns that a single-model provider needs the forced mode (a router selling one id answers 403 for every other one)
+6. **`GET /v1/models` is caller-aware** — `reachableModels()` answers per slot (user-agent inferred) or per session profile, instead of unioning every slot's provider; it deliberately does NOT narrow under a force route, where every id really is accepted
+7. **Per-model routes + force route** — one model id can go to a different provider than its tool's slot, optionally renamed upstream (`claude-sonnet-5` → aeorlink as `claude-sonnet-4-5-20250929`); `"*"` forces every model onto one target so the dashboard decides what actually runs, and `exempt` keeps a model id out of that force route (dashboard: Routing → Model overrides; API: `GET`/`POST /admin/routing/models`)
+8. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
+9. **Token tracking** — input/output/cache_read/cache_write per request; Kiro rows are marked `~` because Kiro reports no token counts at all (estimate at ~4 chars/token)
+10. **Cost estimation** — approximate $ per request at Anthropic list rates for known Claude families; an unrecognised model shows `—` rather than a guessed price
+11. **Model alias mapping** — Claude Code dated names auto-resolved (claude-sonnet-4-20250514 → claude-sonnet-4.5)
+12. **Auto /v1 detection** — base URL auto-corrected if user doesn't add /v1
+13. **Enable/Disable** — per-provider toggle, disabled providers don't route
+14. **Manual model add** — when /models endpoint fails, add models manually
+15. **Request logs** — live log page with latency, tokens, cost, model verification, and the session profile that served each request
+16. **Spend tracking** — permanent append-only record (`data/spend.jsonl`, written from `logRequest`), monthly totals by project / session profile / provider / model / tool / client at `/admin/spend`; project attribution from Codex's workspace metadata, Claude Code's working directory, or an `x-agentos-project` header
 
 ## Running
 
@@ -158,7 +160,7 @@ class: the model looks uncooperative instead of the request looking broken.
 npm install
 npm start         # port 9000
 npm run dev       # with --watch
-npm test          # 74 unit tests (node --test) + 36 integration checks
+npm test          # 80 unit tests (node --test) + 37 integration checks
 ```
 
 ## Dashboard Presets

@@ -26,6 +26,7 @@ const {
   getProfiles,
   resolveProfile,
   setProviderModels,
+  reachableModels,
   deleteProvider,
   fallbackProviders,
   isOverBudget,
@@ -300,4 +301,54 @@ test("with no provider bound, an id another provider sells still resolves to not
   setProviderModels("p-oai", ["gpt-5.6"]);
   const { lookupModelForTool } = await import("../src/kiro/client.js");
   assert.deepEqual(lookupModelForTool("claude", "gpt-5.6"), { provider: null, model: "gpt-5.6" });
+});
+
+
+// --- what a CALLER can reach (GET /v1/models) --------------------------
+// One endpoint serves all three routes, so it used to answer with every slot's
+// models: a Claude Code client was told about the codex/openai slot's provider.
+
+test("reachableModels answers per slot when the client's own id is what goes upstream", () => {
+  seed({ routing: { claude: "p-anth", codex: "p-oai", openai: "p-oai" } });
+  setProviderModels("p-anth", ["claude-sonnet-5"]);
+  setProviderModels("p-oai", ["gpt-5.6", "glm-5.2"]);
+
+  assert.deepEqual(reachableModels({ tool: "claude" }), ["claude-sonnet-5"], "no codex/openai models");
+  assert.deepEqual(reachableModels({ tool: "codex" }).sort(), ["glm-5.2", "gpt-5.6"]);
+
+  // An override makes a client id reachable even though the slot provider has
+  // never heard of it.
+  setModelRoute("claude", "background-5", { providerId: "p-oai", model: "gpt-5.6" });
+  assert.deepEqual(reachableModels({ tool: "claude" }).sort(), ["background-5", "claude-sonnet-5"]);
+});
+
+test("reachableModels does not narrow under a force route — every id is accepted there", () => {
+  seed({ routing: { claude: "p-anth", codex: "p-oai" } });
+  setProviderModels("p-anth", ["claude-sonnet-5"]);
+  setProviderModels("p-oai", ["gpt-5.6"]);
+  setModelRoute("claude", "*", { providerId: "p-anth", model: "claude-sonnet-5" });
+  // With a force route the client's id is rewritten, so anything works — and a
+  // shorter list would make Claude Code refuse the id it is about to send.
+  assert.deepEqual(reachableModels({ tool: "claude" }).sort(), ["claude-sonnet-5", "gpt-5.6"]);
+});
+
+test("reachableModels inside a session profile is exactly that profile", () => {
+  seed({
+    routing: { claude: "p-anth" },
+    profiles: { pinned: { providerId: "p-oai", model: "gpt-5.6" }, loose: { providerId: "p-oai" }, dead: { providerId: "p-off" } },
+  });
+  setProviderModels("p-anth", ["claude-sonnet-5"]);
+  setProviderModels("p-oai", ["gpt-5.6", "glm-5.2"]);
+
+  assert.deepEqual(reachableModels({ profile: "pinned" }), ["gpt-5.6"], "a pinned profile runs one model");
+  assert.deepEqual(reachableModels({ profile: "loose" }).sort(), ["glm-5.2", "gpt-5.6"], "unpinned: the account's catalog");
+  assert.deepEqual(reachableModels({ profile: "dead" }), [], "a broken profile serves nothing");
+});
+
+test("an unrecognised client still gets the union rather than a wrong guess", () => {
+  seed({ routing: { claude: "p-anth", openai: "p-oai" } });
+  setProviderModels("p-anth", ["claude-sonnet-5"]);
+  setProviderModels("p-oai", ["gpt-5.6"]);
+  assert.deepEqual(reachableModels({}).sort(), ["claude-sonnet-5", "gpt-5.6"]);
+  assert.deepEqual(reachableModels({ tool: "not-a-slot" }).sort(), ["claude-sonnet-5", "gpt-5.6"]);
 });

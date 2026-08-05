@@ -767,6 +767,27 @@ await check("spend is recorded permanently and attributed to the right project",
   assert.equal(after.byProject.unknown.requests, 1, "a request with nothing identifying is 'unknown', not dropped");
 });
 
+await check("models: /v1/models answers per caller, not per gateway", async () => {
+  // One endpoint serves all three routes, so it used to list every slot's models —
+  // a Claude Code client was told about the codex/openai slot's provider.
+  writeConfig({ routing: { claude: "prov-anth", codex: "prov-oai", openai: "prov-oai" } });
+  const list = async (ua, path = "/v1/models") =>
+    (await (await fetch(`${base}${path}`, { headers: ua ? { "user-agent": ua } : {} })).json()).data.map((m) => m.id);
+
+  assert.deepEqual(await list("claude-cli/2.1.220"), ["claude-sonnet-5"], "no gpt-5.6 for Claude Code");
+  assert.deepEqual(await list("codex_exec/0.146.0"), ["gpt-5.6"], "and no claude-sonnet-5 for Codex");
+  // An unknown client keeps the old union: a superset beats a wrong guess.
+  assert.ok((await list("curl/8.5.0")).length >= 2);
+
+  // Under a session profile the answer is exactly that profile.
+  writeConfig({
+    routing: { claude: "prov-anth" },
+    profiles: { pinned: { providerId: "prov-oai", model: "gpt-5.6" } },
+  });
+  assert.deepEqual(await list("claude-cli/2.1.220", "/p/pinned/v1/models"), ["gpt-5.6"]);
+  assert.equal((await fetch(`${base}/p/nope/v1/models`)).status, 404, "an unknown profile is still refused");
+});
+
 await check("logs: the date is shown on rows that are not from today", async () => {
   // The Time column showed the clock only until 2026-08-05, which made a log
   // spanning several days unreadable (the live log held 4 days at the time). This

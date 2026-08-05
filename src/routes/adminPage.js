@@ -121,14 +121,17 @@ export function renderAdminPage() {
         <div class="stack">
           <label>Claude Code (/v1/messages)<select id="route-claude"></select></label>
           <label title="Which of that provider's models to actually run. Pick one and the client's choice stops mattering — /model in Claude Code becomes cosmetic. Leave it on (client decides) to forward whatever the client asks for.">Model<select id="force-claude"></select></label>
+          <div class="subline" id="note-claude"></div>
         </div>
         <div class="stack">
           <label>Codex (/v1/responses)<select id="route-codex"></select></label>
           <label title="Which of that provider's models to actually run, regardless of what Codex asks for.">Model<select id="force-codex"></select></label>
+          <div class="subline" id="note-codex"></div>
         </div>
         <div class="stack">
           <label>OpenAI (/v1/chat/completions)<select id="route-openai"></select></label>
           <label title="Which of that provider's models to actually run, regardless of what the client asks for.">Model<select id="force-openai"></select></label>
+          <div class="subline" id="note-openai"></div>
         </div>
       </div>
       <div class="panel-body" style="border-top:1px solid var(--line)">
@@ -375,6 +378,9 @@ export function renderAdminPage() {
       if (force && !force.unavailable && force.id !== slot?.id) {
         sel.innerHTML = '<option value="">forced on '+escapeHtml(force.name||force.id)+': '+escapeHtml(force.model||"?")+'</option>';
         sel.disabled = true;
+        const note = el("note-"+tool);
+        if (note) note.innerHTML = 'Forced onto a different provider (<strong>' + escapeHtml(force.name||force.id) +
+          '</strong>) from Model overrides, so the provider chosen here is not serving traffic.';
         return;
       }
       sel.disabled = !slot || !models.length;
@@ -384,6 +390,33 @@ export function renderAdminPage() {
       sel.value = force && force.id === slot?.id ? (force.model || "") : "";
       if (!slot) sel.innerHTML = '<option value="">(pick a provider first)</option>';
       else if (!models.length) sel.innerHTML = '<option value="">(no models — fetch them first)</option>';
+      renderForceNote(tool, slot, sel.value);
+    }
+
+    // The dropdown IS the force-route toggle, but nothing said so — Amit read the
+    // panel as "provider + model" and could not tell that picking a model makes the
+    // client's /model choice cosmetic, or that (client decides) hands control back.
+    // One line under it, stating what will actually happen, plus the one trap that
+    // is measurable: with (client decides) the client's own id goes upstream, so a
+    // provider selling a single model answers 403 for every other id.
+    function renderForceNote(tool, slot, forcedModel) {
+      const note = el("note-"+tool);
+      if (!note) return;
+      const client = tool === "claude" ? "/model in Claude Code" : "the client's model choice";
+      if (!slot) { note.textContent = ""; return; }
+      if (forcedModel) {
+        note.innerHTML = 'Forced: every request runs <span class="mono">' + escapeHtml(forcedModel) +
+          '</span> — ' + escapeHtml(client) + ' is ignored.';
+        return;
+      }
+      const count = slot.models?.length || 0;
+      note.innerHTML = 'Client decides: ' + escapeHtml(client) + ' is forwarded as-is' +
+        (count === 1
+          ? ' — <strong>but this provider serves only <span class="mono">' + escapeHtml(slot.models[0]) +
+            '</span></strong>, so any other id will be rejected upstream. Pick that model above to force it.'
+          : count
+            ? ' (' + count + ' models available on this provider).'
+            : ' — no models fetched for this provider yet.');
     }
 
     async function forceModelChange(tool) {
