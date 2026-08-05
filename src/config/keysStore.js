@@ -457,20 +457,13 @@ export function setProviderModels(providerId, modelIds) {
   return modelIds;
 }
 
-// Lookup model for a specific tool. Only routes to the provider assigned
-// to that tool, and only if the model is configured on it AND provider is enabled.
-export function lookupProviderForTool(tool, modelId) {
-  const data = readAll();
-  const providerId = data.routing[tool];
-  if (!providerId) return undefined;
-  const provider = data.providers.find((p) => p.id === providerId);
-  if (!provider || provider.enabled === false) return undefined;
-  const binding = data.models.find(
-    (m) => m.modelId === modelId && m.providerId === providerId
-  );
-  if (!binding) return undefined;
-  return provider;
-}
+// ponytail: lookupProviderForTool deleted — it had no callers left. It was part of
+// the old "does this provider sell this model" gate that, together with a
+// client-driven model choice, leaked a /model switch onto whichever provider
+// happened to sell that id. Resolution now runs only through lookupModelForTool
+// (exempt -> session profile -> modelRoutes -> the tool's own slot), and every
+// provider lookup in this file is by ID. Leaving dead copies of the old rule
+// around is how it comes back.
 
 // Get models available for a specific tool (from its assigned provider)
 export function getToolModels(tool) {

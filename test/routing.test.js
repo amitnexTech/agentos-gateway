@@ -25,6 +25,7 @@ const {
   setProfile,
   getProfiles,
   resolveProfile,
+  setProviderModels,
   deleteProvider,
   fallbackProviders,
   isOverBudget,
@@ -271,4 +272,32 @@ test("deleting a provider takes its profiles with it", () => {
   seed({ profiles: { backend: { providerId: "p-oai", model: "gpt-5.6" }, docs: { providerId: "p-anth" } } });
   deleteProvider("p-oai");
   assert.deepEqual(Object.keys(getProfiles()), ["docs"], "a profile naming a dead provider refuses every request");
+});
+
+
+// --- the old cross-provider leak ---------------------------------------
+// Resolution used to fall back to "whichever provider sells this model id", so a
+// /model switch in the client silently moved the request (and the bill) to another
+// account. It is fixed, and this is what keeps it fixed: a model id that only some
+// OTHER provider sells must still be served by the tool's own slot.
+
+test("an id the slot provider does not sell is NOT rerouted to the provider that does", async () => {
+  seed({ routing: { claude: "p-anth" } });
+  // p-oai is the only provider with any model configured, and it sells "gpt-5.6".
+  setProviderModels("p-oai", ["gpt-5.6"]);
+  const { lookupModelForTool } = await import("../src/kiro/client.js");
+
+  const r = lookupModelForTool("claude", "gpt-5.6");
+  assert.equal(r.provider.id, "p-anth", "the slot decides, never the model's owner");
+  assert.equal(r.model, "gpt-5.6", "and the id is forwarded untouched");
+
+  // Same rule when nobody sells it at all.
+  assert.equal(lookupModelForTool("claude", "no-such-model").provider.id, "p-anth");
+});
+
+test("with no provider bound, an id another provider sells still resolves to nothing", async () => {
+  seed({ routing: {} });
+  setProviderModels("p-oai", ["gpt-5.6"]);
+  const { lookupModelForTool } = await import("../src/kiro/client.js");
+  assert.deepEqual(lookupModelForTool("claude", "gpt-5.6"), { provider: null, model: "gpt-5.6" });
 });
