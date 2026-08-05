@@ -239,15 +239,18 @@ The Kiro path does not use `callUpstream` — it has its own `executeKiroWithFal
 
 ## Codex wire format (`/v1/responses`)
 
-Codex CLI ≥ 0.145 does **not** send `tools` or `instructions` at the top level:
+Codex sends tools and the system prompt in **two possible shapes**, and both have been seen on the wire:
 
-- tools arrive as an input item `{type:"additional_tools", role:"developer", tools:[…]}`
-- the system prompt, `AGENTS.md`, and hook output arrive as `role:"developer"` message items
-- tool types include `custom` (freeform text input, e.g. `exec` — the code-mode tool that reaches shell and every MCP tool), `function`, and `namespace` (a GROUP of tools: every configured MCP server, plus `multi_agent_v1` for sub-agents)
+- **top level** — `tools: [...]` plus `instructions` as a string. Measured on 0.146.0 (2026-08-05): a plain `codex exec` run sent 10 tools this way.
+- **as input items** — tools as `{type:"additional_tools", role:"developer", tools:[…]}`, and the system prompt, `AGENTS.md` and hook output as `role:"developer"` message items. This is what 0.145 sent.
+- tool types include `custom` (freeform text input, e.g. `exec_command` — the code-mode tool that reaches shell and every MCP tool), `function`, and `namespace` (a GROUP of tools: every configured MCP server, plus `multi_agent_v1` for sub-agents)
+- the `input` array can contain a literal `null` (observed 2026-08-05); the converter skips non-objects, so it is harmless
 
 `kiro/codexConverter.js` reads both wire shapes (`collectCodexTools`), folds developer/system turns into user turns, and merges same-role neighbours. Freeform tools are advertised to Kiro as `{ input: string }` because Kiro's `toolSpecification` requires a JSON schema, then unwrapped on the way back into a `custom_tool_call` item with raw text. `namespace` tools are **hoisted** into the flat tool list and the reply restores `{namespace, name}` on the `function_call` item — see [[codex-integration]] for the shape, the naming rule and the per-turn cost. Skipping the type, as the converter did until 2026-08-03, stripped every MCP tool from the request.
 
-Reading tools from only the old shape is what left Codex able to chat but unable to call any tool at all (fixed 2026-07-29, see [[fallback-and-verification]] for the verification lesson this produced).
+Reading tools from only one shape is what left Codex able to chat but unable to call any tool at all (fixed 2026-07-29, see [[fallback-and-verification]] for the verification lesson this produced).
+
+**Tool results must name their tool.** On the non-Kiro path a `function_call_output` becomes an OpenAI `role:"tool"` message. Codex sends the output with only `call_id`, `id`, `output` and `type` — no name — so `responses.js` keeps a `call_id → name` map from the `function_call` items in the same request and attaches `name` to the tool message. `name` is optional in the OpenAI spec, so this only ever adds information; it exists because Kimi K3 refuses what it cannot resolve: `400 Kimi K3 tool messages need a resolvable tool name: carry 'tool'/'name', or match a preceding assistant tool_call by order` (measured with the real Codex CLI, 2026-08-05 — the first turn worked and the tool-result turn failed).
 
 ## Key features
 

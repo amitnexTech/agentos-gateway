@@ -108,14 +108,14 @@ Hard rule for every pairing: never answer HTTP 200 with an empty body. An
 untranslatable client field is a 400 with nothing sent upstream; an unusable
 upstream reply (no content blocks, no `choices`, a non-JSON 200) is a 502 naming
 the provider; a stream that carried nothing ends in an explicit error event and
-is logged as an error. Verify with `node scripts/bridge-verify.mjs` (37 checks,
+is logged as an error. Verify with `node scripts/bridge-verify.mjs` (38 checks,
 fake upstreams) and `node scripts/bridge-live-probe.mjs` (real provider).
 
 ## Codex wire format (`/v1/responses`)
 
-Codex CLI ≥ 0.145 does **not** send `tools` or `instructions` at the top level:
+Codex sends tools and the system prompt in TWO possible shapes (both seen on the wire; `collectCodexTools` reads both):
 
-- tools arrive as an input item `{type:"additional_tools", role:"developer", tools:[…]}`
+- top level on 0.146 (`tools`, `instructions`), OR as an input item `{type:"additional_tools", role:"developer", tools:[…]}`
 - the system prompt, `AGENTS.md` and hook output arrive as `role:"developer"` message items
 - tool types include `custom` (freeform text input, e.g. `exec` — the code-mode tool that
   reaches shell and every MCP tool), `function`, and `namespace` (a GROUP of tools)
@@ -160,7 +160,7 @@ class: the model looks uncooperative instead of the request looking broken.
 npm install
 npm start         # port 9000
 npm run dev       # with --watch
-npm test          # 80 unit tests (node --test) + 37 integration checks
+npm test          # 80 unit tests (node --test) + 38 integration checks
 ```
 
 ## Dashboard Presets

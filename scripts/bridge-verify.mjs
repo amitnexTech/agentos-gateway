@@ -767,6 +767,43 @@ await check("spend is recorded permanently and attributed to the right project",
   assert.equal(after.byProject.unknown.requests, 1, "a request with nothing identifying is 'unknown', not dropped");
 });
 
+await check("responses: a tool result names the tool it answers", async () => {
+  // Kimi K3 refuses a tool message it cannot resolve — "tool messages need a
+  // resolvable tool name: carry `tool`/`name`, or match a preceding assistant
+  // tool_call by order" (measured 2026-08-05 with the real Codex CLI: the first turn
+  // worked, the tool-result turn 400'd). `name` is optional in the OpenAI spec, so
+  // adding it only ever gives a provider more to work with.
+  writeConfig({ routing: { codex: "prov-oai" } });
+  const res = await post("/v1/responses", {
+    model: "gpt-5.6",
+    input: [
+      { type: "message", role: "user", content: "read it" },
+      { type: "function_call", call_id: "call_1", name: "Read", arguments: '{"file_path":"/tmp/x"}' },
+      { type: "function_call_output", call_id: "call_1", output: "file contents" },
+    ],
+  });
+  assert.equal(res.status, 200);
+  const sent = received.at(-1).body;
+  const toolMsg = sent.messages.find((m) => m.role === "tool");
+  assert.ok(toolMsg, "the tool result must survive the conversion");
+  assert.equal(toolMsg.tool_call_id, "call_1");
+  assert.equal(toolMsg.name, "Read", "resolved from the preceding function_call");
+
+  // The assistant turn that made the call must still carry tool_calls, which is the
+  // other half of what a provider matches on.
+  const assistant = sent.messages.find((m) => m.tool_calls?.length);
+  assert.equal(assistant.tool_calls[0].function.name, "Read");
+  assert.equal(assistant.tool_calls[0].id, "call_1");
+
+  // An output with no matching call must not invent a name.
+  const orphan = await post("/v1/responses", {
+    model: "gpt-5.6",
+    input: [{ type: "function_call_output", call_id: "call_zz", output: "orphan" }],
+  });
+  assert.equal(orphan.status, 200);
+  assert.equal(received.at(-1).body.messages.find((m) => m.role === "tool").name, undefined);
+});
+
 await check("models: /v1/models answers per caller, not per gateway", async () => {
   // One endpoint serves all three routes, so it used to list every slot's models —
   // a Claude Code client was told about the codex/openai slot's provider.

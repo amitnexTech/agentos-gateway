@@ -27,6 +27,15 @@ function inputToMessages(input, instructions) {
   }
 
   if (Array.isArray(input)) {
+    // call_id -> tool name, filled by the function_call items so their outputs can
+    // name the tool they answer. Kimi K3 refuses a tool message it cannot resolve:
+    // "Kimi K3 tool messages need a resolvable tool name: carry `tool`/`name`, or
+    // match a preceding assistant tool_call by order" (measured 2026-08-05 with the
+    // real Codex CLI — the first turn worked and the tool-result turn 400'd). The
+    // OpenAI spec makes `name` optional on a tool message, so we only ever ADD
+    // information here; providers that ignore it are unaffected.
+    const toolNames = new Map();
+
     for (const item of input) {
       if (typeof item === "string") {
         messages.push({ role: "user", content: item });
@@ -51,11 +60,13 @@ function inputToMessages(input, instructions) {
         }
         messages.push({ role, content: content || "" });
       } else if (type === "function_call" || type === "custom_tool_call") {
+        const callId = item.call_id || `call_${randomUUID().slice(0, 8)}`;
+        if (item.name) toolNames.set(callId, item.name);
         messages.push({
           role: "assistant",
           content: null,
           tool_calls: [{
-            id: item.call_id || `call_${randomUUID().slice(0, 8)}`,
+            id: callId,
             type: "function",
             function: {
               name: item.name || "",
@@ -64,9 +75,12 @@ function inputToMessages(input, instructions) {
           }],
         });
       } else if (type === "function_call_output" || type === "custom_tool_call_output") {
+        const callId = item.call_id || "";
+        const name = item.name || toolNames.get(callId);
         messages.push({
           role: "tool",
-          tool_call_id: item.call_id || "",
+          tool_call_id: callId,
+          ...(name ? { name } : {}),
           content: typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? ""),
         });
       } else {

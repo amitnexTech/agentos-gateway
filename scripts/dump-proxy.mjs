@@ -20,6 +20,14 @@
 import http from "node:http";
 import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { tuneFetchTimeouts } from "../src/lib/fetchTimeouts.js";
+
+// This proxy has its OWN undici defaults, and they bit: capture 001 of a Kimi run
+// hung for five minutes and then wrote "fetch failed" into the response file, which
+// looks exactly like a gateway outage and is not one (measured 2026-08-05). A
+// capture tool that silently truncates slow turns is worse than no capture tool, so
+// disable the 300s headers/body timeout here the same way the server does.
+await tuneFetchTimeouts(0);
 
 const PORT = Number(process.env.PORT || 9010);
 const TARGET = (process.env.TARGET || "http://127.0.0.1:9000").replace(/\/$/, "");
