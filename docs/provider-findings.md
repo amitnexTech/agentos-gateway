@@ -50,6 +50,27 @@ The native path is also *cleaner*, not just faster. On `openai-compat` the gatew
 
 > **General rule: read the vendor's SDK snippet before choosing the provider type.** If it shows the OpenAI SDK, pick `openai-compat` even when an Anthropic-shaped endpoint exists. A vendor compatibility shim is a second translation layer with its own latency and its own bugs; the gateway's bridge is measured and tested. Provider type is a *performance* decision, not only a protocol one.
 
+### Is Kimi slow, or is the client slow? — measured 2026-08-05
+
+Straight at the provider's native endpoint, **no gateway and no Claude Code**, six identical calls back to back (93 prompt tokens, ~32 completion tokens each — the same work every time):
+
+```
+call 1:   15.0 s
+call 2:   26.1 s
+call 3:   79.8 s
+call 4:   41.6 s
+call 5:  300 s+   (curl timeout, ttfb 0 — nothing arrived at all)
+```
+
+**Spread ≥20x on identical work.** Two hypotheses die here:
+
+- **Not a cold start / warm-up.** Call 1 was the *fastest* of the run, and the earlier 69.6 s sample came after two 8-13 s ones.
+- **Not input size.** A 163-token prompt took **69.6 s** while a 12,333-token prompt took **38.5 s** in the same window.
+
+So the slowness and the variance are **provider-side**, on a route whose id literally ends in `-free`. The client is not slow; an agentic client is just *exposed* to it more, because every tool turn is another draw from that distribution and one bad draw past five minutes kills the turn. Latency through Claude Code on the native path (17 s, 26.8 s, 50.7 s, 106.3 s per turn) sits inside the same distribution as the direct calls, which is what confirms the gateway adds nothing measurable.
+
+Practical read: usable for a single deliberate turn, not for a multi-turn agentic task. A paid tier may behave completely differently — this measurement is only about the free route.
+
 ## Evaluation tooling
 
 ```bash
