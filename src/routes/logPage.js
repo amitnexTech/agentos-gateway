@@ -74,7 +74,7 @@ export function renderLogPage() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th title="A leading ~ means the gateway estimated these (~4 chars per token) because the provider reports no token counts — that is every Kiro request.">Tokens (in/out/cache)</th><th title="How full the model's context window is. On Kiro this is the provider's own reported percentage; the history entry count is what the gateway re-sent this turn.">Context</th><th title="Approximate, at Anthropic list rates. Blank when no rate is known for the model — a guessed price is worse than none. On Kiro read the credits column for real spend.">Cost</th><th>Kiro Cr</th><th>Latency</th><th title="Output tokens per second — the speed fingerprint of the model that actually ran. Estimated (~) wherever the token count is.">tok/s</th><th>Status</th><th>Error</th></tr>
+          <tr><th title="Local time. The date is shown as well on any row that is not from today; hover a row's time for the full ISO timestamp.">Time</th><th>Tool</th><th>Model (req → resp)</th><th>Provider</th><th title="A leading ~ means the gateway estimated these (~4 chars per token) because the provider reports no token counts — that is every Kiro request.">Tokens (in/out/cache)</th><th title="How full the model's context window is. On Kiro this is the provider's own reported percentage; the history entry count is what the gateway re-sent this turn.">Context</th><th title="Approximate, at Anthropic list rates. Blank when no rate is known for the model — a guessed price is worse than none. On Kiro read the credits column for real spend.">Cost</th><th>Kiro Cr</th><th>Latency</th><th title="Output tokens per second — the speed fingerprint of the model that actually ran. Estimated (~) wherever the token count is.">tok/s</th><th>Status</th><th>Error</th></tr>
         </thead>
         <tbody id="logBody"></tbody>
       </table>
@@ -86,9 +86,18 @@ export function renderLogPage() {
 
     function escapeHtml(v) { return String(v||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
 
+    // Date + time. Only the time was shown until 2026-08-05, which made a log
+    // spanning several days unreadable — the last 200 requests can easily be a
+    // week of light use. The date is dimmed so the time still scans first, and it
+    // is dropped for today's rows: on a busy day that column would otherwise
+    // repeat the same date 200 times.
     function formatTime(iso) {
       const d = new Date(iso);
-      return d.toLocaleTimeString("en-GB", { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3,"0");
+      const clock = d.toLocaleTimeString("en-GB", { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3,"0");
+      const isToday = d.toDateString() === new Date().toDateString();
+      if (isToday) return clock;
+      const date = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+      return '<span style="color:var(--muted)">'+date+'</span> '+clock;
     }
 
     function latencyClass(ms) {
@@ -167,7 +176,7 @@ export function renderLogPage() {
           const creditsCell = l.kiroCredits ? '<span class="mono">'+l.kiroCredits.toFixed(4)+' cr</span>' : '';
           const tpsCell = l.tps != null ? '<span class="mono"'+estTitle+'>'+est+l.tps.toFixed(1)+'</span>' : '<span style="color:var(--muted)">—</span>';
           return '<tr>' +
-            '<td class="mono">'+formatTime(l.ts)+'</td>' +
+            '<td class="mono" title="'+escapeHtml(l.ts)+'">'+formatTime(l.ts)+'</td>' +
             '<td><span class="badge '+escapeHtml(l.tool)+'">'+escapeHtml(l.tool)+'</span>'+(l.profile?' <span class="badge" title="Session routing profile — this request came in on /p/'+escapeHtml(l.profile)+'">'+escapeHtml(l.profile)+'</span>':'')+'</td>' +
             '<td>'+modelCell+'</td>' +
             '<td>'+escapeHtml(l.providerName)+(l.fallback?' <span class="badge" style="background:#fef3e2;color:#92400e" title="Served by a fallback provider after the primary failed">fallback</span>':'')+'</td>' +
