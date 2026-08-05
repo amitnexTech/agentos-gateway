@@ -23,7 +23,7 @@ Opt-in, default OFF. When a tool's bound provider fails with a retriable upstrea
 
 | command | what it covers |
 |---|---|
-| `npm run test:unit` | 72 unit tests in `test/` over the pure logic: Kiro payload construction, the Kiro stream parser, upstream-error extraction and network-error mapping, and routing/override/session-profile resolution |
+| `npm run test:unit` | 74 unit tests in `test/` over the pure logic: Kiro payload construction, the Kiro stream parser, upstream-error extraction and network-error mapping, the fetch-timeout knob, and routing/override/session-profile resolution |
 | `npm run test:bridge` | `scripts/bridge-verify.mjs` — 27 end-to-end checks through the real gateway against fake upstreams (both protocol directions, Kiro, budget enforcement, native passthrough regression) |
 | `npm test` | both, in that order |
 

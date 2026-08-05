@@ -2,6 +2,7 @@ import { setDefaultResultOrder } from "node:dns";
 import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { createApp } from "./app.js";
 import { adminToken } from "./lib/adminAuth.js";
+import { tuneFetchTimeouts } from "./lib/fetchTimeouts.js";
 
 // This host has no IPv6 default route, but the resolver still hands back
 // NAT64-synthesized AAAA records (64:ff9b::...) for *.kiro.dev. Node's default
@@ -28,6 +29,19 @@ setDefaultResultOrder("ipv4first");
 const CONNECT_ATTEMPT_TIMEOUT_MS = Number(process.env.AGENTOS_CONNECT_ATTEMPT_TIMEOUT_MS || 2000);
 setDefaultAutoSelectFamilyAttemptTimeout(CONNECT_ATTEMPT_TIMEOUT_MS);
 
+// The OTHER five-minute wall. Removing the gateway's own AbortController timeout
+// (lib/proxyExecute.js) was not enough: Node's fetch is undici, and undici applies
+// its OWN headersTimeout and bodyTimeout, both defaulting to 300s. Details, the
+// measurement that found it and the empirical verification live in
+// lib/fetchTimeouts.js.
+//
+// Same knob as the gateway's own abort timer: 0 (the default) means "no timeout,
+// forward and wait", a positive value re-arms both.
+const UPSTREAM_TIMEOUT_MS = Number(process.env.AGENTOS_UPSTREAM_TIMEOUT_MS) > 0
+  ? Number(process.env.AGENTOS_UPSTREAM_TIMEOUT_MS)
+  : 0;
+const fetchTuned = await tuneFetchTimeouts(UPSTREAM_TIMEOUT_MS);
+
 const PORT = process.env.PORT || 9000;
 // Loopback by default: the proxy spends real credits and the dashboard holds
 // API keys, so it must not be exposed to the LAN unless asked for explicitly.
@@ -38,6 +52,10 @@ app.listen(PORT, HOST, () => {
   console.log(`[agentos-gateway] listening on http://${HOST}:${PORT}`);
   console.log(`  Dashboard: http://localhost:${PORT}/admin  (user: any, password: admin token)`);
   console.log(`  Admin token: ${adminToken()}`);
+  console.log(
+    `  Upstream timeout: ${UPSTREAM_TIMEOUT_MS ? `${UPSTREAM_TIMEOUT_MS} ms` : "none"}` +
+      `${fetchTuned ? "" : " (undici's 300s default still applies — see the warning above)"}`
+  );
   console.log(`  Claude Code: set ANTHROPIC_BASE_URL=http://localhost:${PORT}`);
   console.log(`  Codex: set base_url=http://localhost:${PORT}/v1`);
 });

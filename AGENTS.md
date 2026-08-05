@@ -57,6 +57,7 @@ src/
 │   └── kiro.js            # Kiro adapter (URLs/headers; protocol handled by kiro/)
 ├── lib/
 │   ├── proxyExecute.js    # Shared upstream fetch + optional timeout + error map + SSE headers + JSON read
+│   ├── fetchTimeouts.js   # Disables undici's own 300s headers/body timeout (AGENTOS_UPSTREAM_TIMEOUT_MS)
 │   ├── requestContext.js  # Per-request project/client attribution (AsyncLocalStorage)
 │   ├── protocolBridge.js  # OpenAI Chat <-> Anthropic Messages translation, both directions + streaming
 │   ├── anthropicSse.js    # Anthropic SSE parser/passthrough + model/usage extraction
@@ -107,7 +108,7 @@ Hard rule for every pairing: never answer HTTP 200 with an empty body. An
 untranslatable client field is a 400 with nothing sent upstream; an unusable
 upstream reply (no content blocks, no `choices`, a non-JSON 200) is a 502 naming
 the provider; a stream that carried nothing ends in an explicit error event and
-is logged as an error. Verify with `node scripts/bridge-verify.mjs` (35 checks,
+is logged as an error. Verify with `node scripts/bridge-verify.mjs` (36 checks,
 fake upstreams) and `node scripts/bridge-live-probe.mjs` (real provider).
 
 ## Codex wire format (`/v1/responses`)
@@ -157,7 +158,7 @@ class: the model looks uncooperative instead of the request looking broken.
 npm install
 npm start         # port 9000
 npm run dev       # with --watch
-npm test          # 72 unit tests (node --test) + 35 integration checks
+npm test          # 74 unit tests (node --test) + 36 integration checks
 ```
 
 ## Dashboard Presets

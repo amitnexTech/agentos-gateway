@@ -767,6 +767,24 @@ await check("spend is recorded permanently and attributed to the right project",
   assert.equal(after.byProject.unknown.requests, 1, "a request with nothing identifying is 'unknown', not dropped");
 });
 
+await check("logs: the date is shown on rows that are not from today", async () => {
+  // The Time column showed the clock only until 2026-08-05, which made a log
+  // spanning several days unreadable (the live log held 4 days at the time). This
+  // pins BOTH halves of the rule, because the risk runs both ways: dropping the
+  // date again, or spamming today's 200 rows with the same date.
+  const html = (await import("../src/routes/logPage.js")).renderLogPage();
+  const source = /function formatTime\(iso\)\s*\{[\s\S]*?\n {4}\}/.exec(html);
+  assert.ok(source, "formatTime must still exist in the log page — the rule lives there");
+  const formatTime = new Function(`${source[0]}; return formatTime;`)();
+
+  const today = formatTime(new Date().toISOString());
+  assert.ok(/^\d{2}:\d{2}:\d{2}\.\d{3}$/.test(today), `today must stay clock-only, got "${today}"`);
+
+  const older = formatTime(new Date(Date.now() - 3 * 86400000).toISOString());
+  assert.match(older, /\d{2}\s+\w{3}/, `a row from three days ago must carry its date, got "${older}"`);
+  assert.match(older, /\d{2}:\d{2}:\d{2}\.\d{3}/, "…and still show the time");
+});
+
 await check("every dashboard page's inline script parses", async () => {
   // The dashboard has no build step, so nothing else would catch a syntax error in
   // the inline JS — it would simply render a dead page. Found one this way: an
