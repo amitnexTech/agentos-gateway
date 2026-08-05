@@ -95,3 +95,42 @@ test("a Kiro account out of credit budget is retriable so another account can se
   assert.equal(isRetryableApiError(err), true);
   assert.equal(isRetryableApiError(new ApiError(402, "budget used")), false, "402 alone is not retriable");
 });
+
+
+// The upstream abort timer. It is OFF by default on purpose (a fixed abort ends a
+// turn the client was willing to wait for), so the default must stay 0 and a
+// garbage env value must not silently arm it.
+test("upstreamTimeoutMs is off unless a positive number is configured", async () => {
+  const { upstreamTimeoutMs, armTimeout } = await import("../src/lib/proxyExecute.js");
+  const original = process.env.AGENTOS_UPSTREAM_TIMEOUT_MS;
+  try {
+    delete process.env.AGENTOS_UPSTREAM_TIMEOUT_MS;
+    assert.equal(upstreamTimeoutMs(), 0, "no timeout by default");
+    for (const bad of ["", "0", "-1", "abc"]) {
+      process.env.AGENTOS_UPSTREAM_TIMEOUT_MS = bad;
+      assert.equal(upstreamTimeoutMs(), 0, `"${bad}" must not arm the timer`);
+    }
+    process.env.AGENTOS_UPSTREAM_TIMEOUT_MS = "1500";
+    assert.equal(upstreamTimeoutMs(), 1500);
+
+    // With no timeout the controller must never be aborted, and clear() is still
+    // safe to call — the fetch paths call it unconditionally.
+    const off = new AbortController();
+    armTimeout(off, 0)();
+    assert.equal(off.signal.aborted, false);
+
+    // With one configured it does abort, and clearing it prevents that.
+    const armed = new AbortController();
+    armTimeout(armed, 1);
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(armed.signal.aborted, true);
+
+    const cancelled = new AbortController();
+    armTimeout(cancelled, 1)();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(cancelled.signal.aborted, false);
+  } finally {
+    if (original === undefined) delete process.env.AGENTOS_UPSTREAM_TIMEOUT_MS;
+    else process.env.AGENTOS_UPSTREAM_TIMEOUT_MS = original;
+  }
+});

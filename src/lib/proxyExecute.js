@@ -56,13 +56,35 @@ export async function readUpstreamJson(upstream, provider) {
   }
 }
 
+// Upstream fetch timeout. OFF by default since 2026-08-04: it was a fixed 300s,
+// and while it only ever covered time-to-response-HEADERS (the timer is cleared
+// the moment the upstream answers, so a long stream was never affected), a fixed
+// abort is still the gateway ending a turn the client was willing to wait for.
+// Set AGENTOS_UPSTREAM_TIMEOUT_MS to a positive number of milliseconds to arm it
+// again — worth doing if a provider ever accepts the connection and then never
+// responds, because without it that request hangs until the client gives up
+// instead of returning a clean 504 that auto-fallback can act on. Read per call
+// so it can be changed without editing code.
+export function upstreamTimeoutMs() {
+  const raw = Number(process.env.AGENTOS_UPSTREAM_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+// Arm the abort timer only when a timeout is configured; the returned clear() is
+// safe to call either way.
+export function armTimeout(controller, ms = upstreamTimeoutMs()) {
+  if (!ms) return () => {};
+  const timer = setTimeout(() => controller.abort(), ms);
+  return () => clearTimeout(timer);
+}
+
 // Fetch the upstream provider and apply unified error mapping.
 //
 // On success: returns { upstream, startTime } — the caller consumes
 // upstream.body (streaming pipe or .json()) and performs the SUCCESS logRequest
 // with whatever usage it extracts (usage shape varies per protocol).
 // On upstream error: records the error, logs it, and throws ApiError.
-// On timeout: throws ApiError(504).
+// On timeout (only when one is configured): throws ApiError(504).
 //
 // anthropicVersion is forwarded only by the Anthropic passthrough route so the
 // client's requested version reaches the provider; other adapters ignore it.
@@ -73,7 +95,7 @@ export async function callUpstream({
   rawModel,
   tool,
   provider,
-  timeoutMs = 300000,
+  timeoutMs,
   anthropicVersion,
 }) {
   const url = adapter.getRequestUrl(model, { stream: Boolean(body?.stream) });
@@ -84,7 +106,7 @@ export async function callUpstream({
   const translated = adapter.translateRequest(body);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const clearTimer = armTimeout(controller, timeoutMs ?? upstreamTimeoutMs());
   const startTime = Date.now();
 
   let upstream;
@@ -96,7 +118,7 @@ export async function callUpstream({
       signal: controller.signal,
     });
   } catch (err) {
-    clearTimeout(timeout);
+    clearTimer();
     if (err.name === "AbortError") throw new ApiError(504, "Upstream timeout");
     // A connect-level failure ("fetch failed" + ENOTFOUND/ETIMEDOUT/…) is a
     // provider outage, not a gateway bug. Map it so it gets a readable message,
@@ -115,7 +137,7 @@ export async function callUpstream({
     }
     throw mapped;
   }
-  clearTimeout(timeout);
+  clearTimer();
 
   if (!upstream.ok) {
     recordError(model);

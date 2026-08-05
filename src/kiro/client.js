@@ -17,6 +17,7 @@ import { isFallbackEnabled } from "../config/keysStore.js";
 import { isRetryableApiError } from "../lib/fallback.js";
 import { ApiError } from "../lib/errors.js";
 import { networkErrorToApiError } from "../lib/netError.js";
+import { armTimeout } from "../lib/proxyExecute.js";
 import { createAdapter } from "../registry.js";
 import { anthropicToKiro } from "./converter.js";
 
@@ -161,7 +162,8 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, ki
   const headers = adapter.getRequestHeaders();
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 300000);
+  // Same rule as the non-Kiro path: no fixed abort unless one is configured.
+  const clearTimer = armTimeout(controller);
   const startTime = Date.now();
 
   let upstream;
@@ -173,7 +175,7 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, ki
       signal: controller.signal,
     });
   } catch (err) {
-    clearTimeout(timeout);
+    clearTimer();
     if (err.name === "AbortError") throw new ApiError(504, "Kiro API timeout");
     // Connect-level failure (DNS/TCP/TLS) — a reachability problem, not a bug.
     // Map it so it reads clearly, gets logged, and can trigger auto-fallback.
@@ -191,7 +193,7 @@ export async function executeKiro({ adapter, provider, tool, model, rawModel, ki
     }
     throw mapped;
   }
-  clearTimeout(timeout);
+  clearTimer();
 
   if (!upstream.ok) {
     recordError(model);

@@ -52,7 +52,7 @@ src/
 │   ├── localOpenAI.js      # Local providers (no auth)
 │   └── kiro.js             # Kiro adapter (URLs/headers; protocol handled by kiro/)
 ├── lib/
-│   ├── proxyExecute.js     # Shared upstream fetch + timeout + error map + SSE headers
+│   ├── proxyExecute.js     # Shared upstream fetch + optional timeout + error map + SSE headers
 │   ├── anthropicSse.js     # Anthropic SSE passthrough + model/usage extraction
 │   ├── stream.js           # Generic OpenAI SSE stream piping
 │   ├── errors.js           # Error handling
@@ -218,7 +218,9 @@ Both mechanisms above are global: every session on the machine follows the same 
 
 All three protocol routes funnel their actual upstream HTTP call through `src/lib/proxyExecute.js` rather than calling `fetch` inline — this is shared plumbing, not per-route logic:
 
-- `callUpstream(...)` builds the request from the adapter (`getRequestUrl`, `getRequestHeaders`, `translateRequest`), applies a 300s default timeout via `AbortController`, and on failure maps the error uniformly: connect-level failures (`ENOTFOUND`, `ETIMEDOUT`, etc.) go through `networkErrorToApiError` (see [[kiro-integration]] for why this mapping mattered), non-2xx responses go through `upstreamErrorMessage` and are mapped to specific `ApiError` status codes (401/403 → 502 "Upstream auth error", 429 → 429 "Upstream rate limit", other non-2xx → 502 or passthrough status). Every failure is logged via `logRequest` before the error is thrown, so failed attempts are visible in `/admin/logs` even though the request itself never succeeds.
+- `callUpstream(...)` builds the request from the adapter (`getRequestUrl`, `getRequestHeaders`, `translateRequest`), and on failure maps the error uniformly: connect-level failures (`ENOTFOUND`, `ETIMEDOUT`, etc.) go through `networkErrorToApiError` (see [[kiro-integration]] for why this mapping mattered), non-2xx responses go through `upstreamErrorMessage` and are mapped to specific `ApiError` status codes (401/403 → 502 "Upstream auth error", 429 → 429 "Upstream rate limit", other non-2xx → 502 or passthrough status). Every failure is logged via `logRequest` before the error is thrown, so failed attempts are visible in `/admin/logs` even though the request itself never succeeds.
+
+  **No abort timeout by default (changed 2026-08-04).** It used to be a fixed 300s. Two facts made that worth removing: it only ever covered *time to response headers* — `clearTimeout` fires the moment the upstream answers, so a long stream was never affected — and a fixed abort is still the gateway ending a turn the client was willing to wait for. Set `AGENTOS_UPSTREAM_TIMEOUT_MS` to a positive number of milliseconds to arm it again (`upstreamTimeoutMs()` / `armTimeout()`, read per call). Worth arming if a provider ever accepts the connection and then never answers: without it that request hangs until the client gives up, instead of returning a clean 504 that auto-fallback can act on. The Kiro path uses the same helper, so both paths behave identically. Evidence it was not doing useful work here: **zero** 504/timeout entries across the last 200 logged requests, slowest successful call 103s.
 - `callUpstreamWithFallback(...)` wraps `callUpstream` with the opt-in auto-fallback behavior — see [[fallback-and-verification]] for the full fallback chain design. When fallback is off (the default) it behaves identically to a plain `callUpstream` call.
 
 The Kiro path does not use `callUpstream` — it has its own `executeKiroWithFallback` in `src/kiro/client.js`, following the same fallback pattern but against Kiro's payload shape rather than a generic adapter body. See [[kiro-integration]].

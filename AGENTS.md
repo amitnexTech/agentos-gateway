@@ -56,7 +56,7 @@ src/
 │   ├── localOpenAI.js     # Local providers (no auth)
 │   └── kiro.js            # Kiro adapter (URLs/headers; protocol handled by kiro/)
 ├── lib/
-│   ├── proxyExecute.js    # Shared upstream fetch + timeout + error map + SSE headers + JSON read
+│   ├── proxyExecute.js    # Shared upstream fetch + optional timeout + error map + SSE headers + JSON read
 │   ├── requestContext.js  # Per-request project/client attribution (AsyncLocalStorage)
 │   ├── protocolBridge.js  # OpenAI Chat <-> Anthropic Messages translation, both directions + streaming
 │   ├── anthropicSse.js    # Anthropic SSE parser/passthrough + model/usage extraction
