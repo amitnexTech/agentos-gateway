@@ -49,6 +49,9 @@ export function renderDashboardPage() {
           <a href="/admin/kiro" style="display: flex; align-items: center; justify-content: center; gap: 8px; padding: 16px; background: var(--field); border-radius: 8px; border: 1px solid var(--line); text-decoration: none; color: var(--accent); font-weight: 600; transition: all 200ms;" onmouseover="this.style.background='var(--active-bg)'" onmouseout="this.style.background='var(--field)'">
             <span>⚡</span> Kiro
           </a>
+          <a href="/admin/guide" style="display: flex; align-items: center; justify-content: center; gap: 8px; padding: 16px; background: var(--field); border-radius: 8px; border: 1px solid var(--line); text-decoration: none; color: var(--accent); font-weight: 600; transition: all 200ms;" onmouseover="this.style.background='var(--active-bg)'" onmouseout="this.style.background='var(--field)'">
+            <span>?</span> Setup guide
+          </a>
         </div>
       </div>
     </section>

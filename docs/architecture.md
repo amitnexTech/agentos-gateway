@@ -16,7 +16,9 @@ Logs        ─→ localhost:9000/admin/logs
 
 Each tool can use a different provider — or all the same. Switch in the dashboard dropdown, no restart needed for routing changes. Dashboard UI edits (`src/routes/*Page.js`, `layoutTemplate.js`) DO need a gateway restart — the modules are loaded once at boot (see `CLAUDE.md`).
 
-The dashboard is split into one page per concern, sharing a left-sidebar shell from `layoutTemplate.js`: `/admin` (overview), `/admin/routing-panel`, `/admin/providers-panel`, `/admin/logs`, `/admin/spend`, `/admin/kiro`. The JSON APIs keep their original paths — `GET /admin/routing` and `GET /admin/providers` still return JSON, which is why the pages live on `-panel` URLs rather than taking those over. `/admin/classic` still serves the previous single-page dashboard as a rollback.
+The dashboard is split into one page per concern, sharing a left-sidebar shell from `layoutTemplate.js`: `/admin` (overview), `/admin/routing-panel`, `/admin/providers-panel`, `/admin/logs`, `/admin/spend`, `/admin/kiro`, `/admin/guide`. The JSON APIs keep their original paths — `GET /admin/routing` and `GET /admin/providers` still return JSON, which is why the pages live on `-panel` URLs rather than taking those over. `/admin/classic` still serves the previous single-page dashboard as a rollback.
+
+`/admin/guide` answers "how do I point an agent at this?" — per-client base URLs (Claude Code takes no `/v1`, Codex needs it spelled out), the admin token, one copy-button per value, the `/p/<name>` URL for every existing profile, and the JSON-endpoint list. It renders from live state: the port comes from the request's own Host header and the profile list from config, so a guide read on a test instance shows that instance's values. `bridge-verify.mjs` checks the URLs it prints against what the gateway actually serves, because a stale base URL in a guide reads as a gateway bug.
 
 ## Directory structure
 
@@ -34,6 +36,7 @@ src/
 │   ├── logsPage.js        # /admin/logs — request log
 │   ├── spendAnalyticsPage.js # /admin/spend — monthly tokens/cost
 │   ├── kiroPage.js        # /admin/kiro — Kiro account management
+│   ├── guidePage.js       # /admin/guide — client setup guide, rendered from live state
 │   ├── adminPage.js       # /admin/classic — the old single-page dashboard (rollback)
 │   ├── kiroAccount.js     # Kiro account CRUD (Kiro-specific façade over providers)
 │   ├── proxy.js           # /v1/chat/completions (OpenAI Chat) — protocol glue

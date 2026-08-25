@@ -843,6 +843,12 @@ await check("logs: the date is shown on rows that are not from today", async () 
   assert.match(older, /\d{2}:\d{2}:\d{2}\.\d{3}/, "…and still show the time");
 });
 
+// The guide page renders from live gateway state (port, admin token, profiles),
+// so the render checks bind representative values rather than calling it bare.
+const { renderGuidePage } = await import("../src/routes/guidePage.js");
+const guideRender = () =>
+  renderGuidePage({ port: 9000, host: "127.0.0.1", adminToken: "test-token", profiles: ["backend"] });
+
 await check("every dashboard page's inline script parses", async () => {
   // The dashboard has no build step, so nothing else would catch a syntax error in
   // the inline JS — it would simply render a dead page. Found one this way: an
@@ -854,6 +860,7 @@ await check("every dashboard page's inline script parses", async () => {
     logs: (await import("../src/routes/logsPage.js")).renderLogsPage,
     spend: (await import("../src/routes/spendAnalyticsPage.js")).renderSpendAnalyticsPage,
     kiro: (await import("../src/routes/kiroPage.js")).renderKiroPage,
+    guide: guideRender,
     classic: (await import("../src/routes/adminPage.js")).renderAdminPage,
   };
   for (const [name, render] of Object.entries(pages)) {
@@ -879,6 +886,7 @@ await check("every dashboard page's element references resolve", async () => {
     logs: (await import("../src/routes/logsPage.js")).renderLogsPage,
     spend: (await import("../src/routes/spendAnalyticsPage.js")).renderSpendAnalyticsPage,
     kiro: (await import("../src/routes/kiroPage.js")).renderKiroPage,
+    guide: guideRender,
   };
   for (const [name, render] of Object.entries(pages)) {
     const html = render();
@@ -907,6 +915,7 @@ await check("dashboard page scripts do not collide with the layout shell's globa
     logs: (await import("../src/routes/logsPage.js")).renderLogsPage,
     spend: (await import("../src/routes/spendAnalyticsPage.js")).renderSpendAnalyticsPage,
     kiro: (await import("../src/routes/kiroPage.js")).renderKiroPage,
+    guide: guideRender,
   };
   for (const [name, render] of Object.entries(pages)) {
     const html = render();
@@ -967,6 +976,50 @@ await check("the providers page offers the local presets, not just hosted ones",
   }
   assert.match(html, /ollama:\s*\{[^}]*type:\s*'local-openai'/, "ollama must be a local-openai preset");
   assert.ok(html.includes("localhost:11434"), "the Ollama preset should point at its default local port");
+});
+
+// A setup guide that drifts is worse than no guide: someone pastes a stale base
+// URL and the failure looks like a gateway bug. These are the claims that would
+// actually break a copy-paste, checked against the running gateway rather than
+// against the prose.
+await check("the setup guide's URLs match what the gateway really serves", async () => {
+  const auth = "Basic " + Buffer.from("any:test-token").toString("base64");
+  writeConfig({
+    routing: { claude: "prov-anth", codex: "prov-oai", openai: "prov-oai" },
+    profiles: { backend: { providerId: "prov-oai", model: "gpt-5.6" } },
+  });
+  const port = server.address().port;
+  const html = renderGuidePage({ port, host: "127.0.0.1", adminToken: "test-token", profiles: ["backend"] });
+  const origin = `http://localhost:${port}`;
+
+  // Claude Code's base URL must NOT carry /v1 (the client appends it); Codex's must.
+  assert.ok(html.includes(`data-copy-text="${origin}"`), "the Claude Code base URL should have no /v1");
+  assert.ok(html.includes(`data-copy-text="${origin}/v1"`), "the Codex base URL should end in /v1");
+
+  // The profile URL shape the guide prints has to be the one that actually serves.
+  assert.ok(html.includes(`${origin}/p/backend`), "the guide should print the profile base URL");
+  const viaProfile = await fetch(`${base}/p/backend/v1/models`);
+  assert.equal(viaProfile.status, 200, "/p/<name>/v1 must serve — that is the shape the guide tells people to use");
+
+  // The guide claims /v1 needs no client auth and /admin does. Both are load-bearing.
+  assert.equal((await fetch(`${base}/v1/models`)).status, 200, "guide says /v1 needs no auth");
+  assert.equal((await fetch(`${base}/admin/health`)).status, 401, "guide says /admin is protected");
+  assert.equal(
+    (await fetch(`${base}/admin/health`, { headers: { Authorization: auth } })).status,
+    200,
+    "…and that the token is the Basic password",
+  );
+
+  // Every JSON path the guide lists must really answer JSON, not HTML.
+  for (const path of ["/admin/routing", "/admin/providers", "/admin/routing/models", "/admin/profiles"]) {
+    assert.ok(html.includes(path), `the guide should list ${path} as a JSON endpoint`);
+    const res = await fetch(`${base}${path}`, { headers: { Authorization: auth } });
+    assert.match(
+      res.headers.get("content-type") || "",
+      /json/,
+      `${path} is documented as JSON but answered ${res.headers.get("content-type")}`,
+    );
+  }
 });
 
 console.log("\nsession profiles (per-session routing by base URL)");

@@ -34,6 +34,7 @@ src/
 │   ├── logsPage.js        # /admin/logs — request log
 │   ├── spendAnalyticsPage.js # /admin/spend — monthly tokens/cost by project, provider, model
 │   ├── kiroPage.js        # /admin/kiro — Kiro account management
+│   ├── guidePage.js       # /admin/guide — client setup guide, rendered from live state
 │   ├── adminPage.js       # /admin/classic — the old single-page dashboard (rollback)
 │   ├── logPage.js         # superseded by logsPage.js (kept for rollback)
 │   ├── spendPage.js       # superseded by spendAnalyticsPage.js (kept for rollback)

@@ -7,6 +7,7 @@ export function renderLayout(content, currentPage) {
     { id: 'logs', label: 'Logs', icon: '📋', path: '/admin/logs' },
     { id: 'spend', label: 'Spend', icon: '💰', path: '/admin/spend' },
     { id: 'kiro', label: 'Kiro', icon: '⚡', path: '/admin/kiro' },
+    { id: 'guide', label: 'Setup guide', icon: '?', path: '/admin/guide' },
   ];
 
   const navHtml = nav.map(item => `

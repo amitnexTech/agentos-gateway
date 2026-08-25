@@ -53,7 +53,9 @@ shell + sidebar in `layoutTemplate.js`), but the modules are loaded once at boot
 so the gateway process must be restarted for UI edits to appear.
 
 One page per concern: `/admin` overview, `/admin/routing-panel`,
-`/admin/providers-panel`, `/admin/logs`, `/admin/spend`, `/admin/kiro`.
+`/admin/providers-panel`, `/admin/logs`, `/admin/spend`, `/admin/kiro`,
+`/admin/guide` (client setup: base URLs, admin token, profile URLs, all rendered
+from live state so they cannot go stale).
 `/admin/classic` still serves the old single-page dashboard as a rollback.
 The pages sit on `-panel` URLs because `GET /admin/routing` and
 `GET /admin/providers` are JSON APIs that `scripts/bridge-verify.mjs` reads —

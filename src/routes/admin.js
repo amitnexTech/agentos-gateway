@@ -40,6 +40,8 @@ import { renderProvidersPage } from "./providersPage.js";
 import { renderLogsPage } from "./logsPage.js";
 import { renderSpendAnalyticsPage } from "./spendAnalyticsPage.js";
 import { renderKiroPage } from "./kiroPage.js";
+import { renderGuidePage } from "./guidePage.js";
+import { adminToken } from "../lib/adminAuth.js";
 import { getLogs, clearLogs } from "../config/logStore.js";
 import { getSpend } from "../config/spendStore.js";
 import { kiroAccountRouter } from "./kiroAccount.js";
@@ -101,6 +103,22 @@ adminRouter.get("/providers-panel", (_req, res) => {
 
 adminRouter.get("/kiro", (_req, res) => {
   res.type("html").send(renderKiroPage());
+});
+
+// Setup guide. Built from live state, not hardcoded: the port comes from the
+// request's own Host header so the snippets are correct even on a test instance
+// running on another port, and the profile list keeps the URLs honest.
+adminRouter.get("/guide", (req, res) => {
+  const host = req.headers.host || "";
+  const port = host.includes(":") ? host.split(":").pop() : process.env.PORT || 9000;
+  res.type("html").send(
+    renderGuidePage({
+      port,
+      host: process.env.HOST || "127.0.0.1",
+      adminToken: adminToken(),
+      profiles: Object.keys(getProfiles()),
+    })
+  );
 });
 
 // --- Routing (per-tool provider assignment) ---
