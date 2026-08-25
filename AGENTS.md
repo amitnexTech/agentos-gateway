@@ -27,9 +27,16 @@ src/
 ├── registry.js            # Adapter registry + factory
 ├── routes/
 │   ├── admin.js           # Dashboard API + routing + provider CRUD
-│   ├── adminPage.js       # Dashboard HTML (inline, no build step)
-│   ├── logPage.js         # Request log page HTML
-│   ├── spendPage.js       # Spend page HTML (monthly tokens/cost by project, provider, model)
+│   ├── layoutTemplate.js  # Shared shell: sidebar nav + common CSS for every page
+│   ├── dashboardPage.js   # /admin — overview (uptime, today's tokens/cost)
+│   ├── routingPage.js     # /admin/routing-panel — slots, force route, overrides, profiles
+│   ├── providersPage.js   # /admin/providers-panel — provider CRUD + model selection
+│   ├── logsPage.js        # /admin/logs — request log
+│   ├── spendAnalyticsPage.js # /admin/spend — monthly tokens/cost by project, provider, model
+│   ├── kiroPage.js        # /admin/kiro — Kiro account management
+│   ├── adminPage.js       # /admin/classic — the old single-page dashboard (rollback)
+│   ├── logPage.js         # superseded by logsPage.js (kept for rollback)
+│   ├── spendPage.js       # superseded by spendAnalyticsPage.js (kept for rollback)
 │   ├── kiroAccount.js     # Kiro account CRUD (Kiro-specific façade over providers)
 │   ├── proxy.js           # /v1/chat/completions (OpenAI Chat) — protocol glue
 │   ├── anthropic.js       # /v1/messages (Claude Code) — protocol glue only

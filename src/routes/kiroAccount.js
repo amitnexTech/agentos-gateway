@@ -11,6 +11,7 @@ import {
   updateProvider,
   listProviders,
   getProvider,
+  getProviderModels,
   deleteProvider,
 } from "../config/keysStore.js";
 import { envSet, envDelete, envGet } from "../config/envStore.js";
@@ -181,6 +182,10 @@ kiroAccountRouter.get("/kiro/accounts", (_req, res) => {
       hasKey: Boolean(p.apiKeyRef && envGet(p.apiKeyRef)),
       enabled: p.enabled !== false,
       status: p.status || "untested",
+      // Model count, not the list: an account with zero models cannot serve a
+      // request, so the dashboard needs to show it. The list itself belongs to
+      // GET /admin/providers.
+      modelCount: getProviderModels(p.id).length,
     };
   });
   res.json(accounts);

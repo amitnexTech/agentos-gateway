@@ -34,9 +34,13 @@ import { fetchModels } from "../lib/modelFetch.js";
 import { probeProvider } from "../lib/providerProbe.js";
 import { ApiError } from "../lib/errors.js";
 import { renderAdminPage } from "./adminPage.js";
+import { renderDashboardPage } from "./dashboardPage.js";
+import { renderRoutingPage } from "./routingPage.js";
+import { renderProvidersPage } from "./providersPage.js";
+import { renderLogsPage } from "./logsPage.js";
+import { renderSpendAnalyticsPage } from "./spendAnalyticsPage.js";
+import { renderKiroPage } from "./kiroPage.js";
 import { getLogs, clearLogs } from "../config/logStore.js";
-import { renderLogPage } from "./logPage.js";
-import { renderSpendPage } from "./spendPage.js";
 import { getSpend } from "../config/spendStore.js";
 import { kiroAccountRouter } from "./kiroAccount.js";
 
@@ -73,8 +77,30 @@ adminRouter.get("/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime(), version: "0.1.0" });
 });
 
+// --- HTML pages (sidebar navigation) ---
+// The JSON APIs keep their original paths (GET /admin/routing, /admin/providers)
+// because scripts/bridge-verify.mjs and the docs' curl examples read them; the
+// pages therefore live on "-panel" paths rather than stealing those URLs.
 adminRouter.get("/", (_req, res) => {
+  res.type("html").send(renderDashboardPage());
+});
+
+// The previous single-page dashboard, kept as a rollback path while the split
+// pages settle.
+adminRouter.get("/classic", (_req, res) => {
   res.type("html").send(renderAdminPage());
+});
+
+adminRouter.get("/routing-panel", (_req, res) => {
+  res.type("html").send(renderRoutingPage());
+});
+
+adminRouter.get("/providers-panel", (_req, res) => {
+  res.type("html").send(renderProvidersPage());
+});
+
+adminRouter.get("/kiro", (_req, res) => {
+  res.type("html").send(renderKiroPage());
 });
 
 // --- Routing (per-tool provider assignment) ---
@@ -468,7 +494,7 @@ adminRouter.post("/config", (req, res) => {
 // --- Logs ---
 
 adminRouter.get("/logs", (_req, res) => {
-  res.type("html").send(renderLogPage());
+  res.type("html").send(renderLogsPage());
 });
 
 adminRouter.get("/logs/data", (req, res) => {
@@ -484,7 +510,7 @@ adminRouter.delete("/logs", (_req, res) => {
 // Spend: the permanent record the 200-entry log cannot answer for — monthly totals
 // broken down by project, provider, model, tool and client. See spendStore.js.
 adminRouter.get("/spend", (_req, res) => {
-  res.type("html").send(renderSpendPage());
+  res.type("html").send(renderSpendAnalyticsPage());
 });
 
 adminRouter.get("/spend/data", (req, res) => {

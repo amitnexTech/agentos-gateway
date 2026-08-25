@@ -48,9 +48,39 @@ npm start           # port 9000
 npm run dev         # with --watch
 ```
 
-Dashboard changes are served from `src/routes/adminPage.js` at request time but
-the module is loaded once at boot, so the gateway process must be restarted for
-UI edits to appear.
+Dashboard pages are rendered at request time from `src/routes/*Page.js` (shared
+shell + sidebar in `layoutTemplate.js`), but the modules are loaded once at boot,
+so the gateway process must be restarted for UI edits to appear.
+
+One page per concern: `/admin` overview, `/admin/routing-panel`,
+`/admin/providers-panel`, `/admin/logs`, `/admin/spend`, `/admin/kiro`.
+`/admin/classic` still serves the old single-page dashboard as a rollback.
+The pages sit on `-panel` URLs because `GET /admin/routing` and
+`GET /admin/providers` are JSON APIs that `scripts/bridge-verify.mjs` reads —
+do not convert those paths to HTML.
+
+Two traps when editing a page, both invisible without a build step and both
+covered by `npm test`:
+
+- Inline browser JS is inside a JS template literal, so `\'` is consumed by the
+  literal and reaches the browser as a bare `'`, ending the string early. Use
+  `data-*` attributes plus a delegated listener instead of inline `onclick`.
+- A `fetch` that sends a JSON body MUST set `Content-Type: application/json`.
+  Without it `express.json()` skips parsing, the handler sees `{}`, and a call
+  like `POST /admin/routing/claude` silently *clears* the slot and answers 200.
+
+Two more, learned the hard way — a page that renders can still be completely
+dead, so verify by loading it, not by grepping the HTML:
+
+- Separate classic `<script>` blocks share ONE global lexical scope. A top-level
+  `const el` in `layoutTemplate.js` and another in the page's own script is a
+  redeclaration `SyntaxError` that kills a whole block with no visible error:
+  markup renders, every button does nothing. Wrap each page script in an IIFE;
+  the layout deliberately uses `byId`, not `el`.
+- Read only the fields an endpoint actually sends. `/admin/kiro/accounts` sends
+  `modelCount`, not `models` — reading `a.models.length` threw inside the row
+  renderer and a `catch` reported it as "Failed to load accounts", which blamed
+  the endpoint for a rendering bug. Catch blocks should print `e.message`.
 
 Operational trap: `pkill -f "node src/server.js"` matches the invoking shell's
 own command line and kills it. Even the bracketed form

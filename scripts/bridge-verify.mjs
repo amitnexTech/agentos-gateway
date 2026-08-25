@@ -848,9 +848,13 @@ await check("every dashboard page's inline script parses", async () => {
   // the inline JS — it would simply render a dead page. Found one this way: an
   // unescaped apostrophe in a tooltip string broke the whole log page.
   const pages = {
-    dashboard: (await import("../src/routes/adminPage.js")).renderAdminPage,
-    logs: (await import("../src/routes/logPage.js")).renderLogPage,
-    spend: (await import("../src/routes/spendPage.js")).renderSpendPage,
+    dashboard: (await import("../src/routes/dashboardPage.js")).renderDashboardPage,
+    routing: (await import("../src/routes/routingPage.js")).renderRoutingPage,
+    providers: (await import("../src/routes/providersPage.js")).renderProvidersPage,
+    logs: (await import("../src/routes/logsPage.js")).renderLogsPage,
+    spend: (await import("../src/routes/spendAnalyticsPage.js")).renderSpendAnalyticsPage,
+    kiro: (await import("../src/routes/kiroPage.js")).renderKiroPage,
+    classic: (await import("../src/routes/adminPage.js")).renderAdminPage,
   };
   for (const [name, render] of Object.entries(pages)) {
     const html = render();
@@ -861,6 +865,108 @@ await check("every dashboard page's inline script parses", async () => {
       assert.doesNotThrow(() => new Function(src), `${name} page, script ${i + 1} does not parse`);
     }
   }
+});
+
+// A page whose script reads an element that the markup never renders throws on
+// load and dies silently — same failure class as a syntax error, and equally
+// invisible without a build step. Caught two real ones while splitting the
+// dashboard into per-page routes.
+await check("every dashboard page's element references resolve", async () => {
+  const pages = {
+    dashboard: (await import("../src/routes/dashboardPage.js")).renderDashboardPage,
+    routing: (await import("../src/routes/routingPage.js")).renderRoutingPage,
+    providers: (await import("../src/routes/providersPage.js")).renderProvidersPage,
+    logs: (await import("../src/routes/logsPage.js")).renderLogsPage,
+    spend: (await import("../src/routes/spendAnalyticsPage.js")).renderSpendAnalyticsPage,
+    kiro: (await import("../src/routes/kiroPage.js")).renderKiroPage,
+  };
+  for (const [name, render] of Object.entries(pages)) {
+    const html = render();
+    const present = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+    const wanted = new Set([
+      ...[...html.matchAll(/\bel\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1]),
+      ...[...html.matchAll(/getElementById\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1]),
+    ]);
+    const missing = [...wanted].filter((id) => !present.has(id));
+    assert.deepEqual(missing, [], `${name} page references ids that do not exist: ${missing.join(", ")}`);
+  }
+});
+
+// Separate classic <script> blocks share ONE global lexical scope, so the same
+// top-level const in the layout shell and in a page's own script is a
+// redeclaration SyntaxError that kills a whole block — the page renders, the
+// markup is all there, and the buttons simply do nothing. Parsing each block in
+// isolation (the check above) passes straight through it: that is exactly how the
+// Kiro page shipped with a dead Add-account button. Every page script is wrapped
+// in an IIFE now; this pins that down.
+await check("dashboard page scripts do not collide with the layout shell's globals", async () => {
+  const pages = {
+    dashboard: (await import("../src/routes/dashboardPage.js")).renderDashboardPage,
+    routing: (await import("../src/routes/routingPage.js")).renderRoutingPage,
+    providers: (await import("../src/routes/providersPage.js")).renderProvidersPage,
+    logs: (await import("../src/routes/logsPage.js")).renderLogsPage,
+    spend: (await import("../src/routes/spendAnalyticsPage.js")).renderSpendAnalyticsPage,
+    kiro: (await import("../src/routes/kiroPage.js")).renderKiroPage,
+  };
+  for (const [name, render] of Object.entries(pages)) {
+    const html = render();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    assert.ok(scripts.length > 1, `${name} page: expected a layout script plus a page script`);
+    // Concatenating is what the browser effectively does for top-level bindings.
+    assert.doesNotThrow(
+      () => new Function(scripts.join("\n;\n")),
+      `${name} page: its script collides with the layout shell — wrap it in an IIFE`,
+    );
+  }
+});
+
+// A page can parse, resolve every id, and still die on first render because it
+// reads a field the endpoint does not send. That is what happened: the Kiro page
+// read `a.models.length` off /admin/kiro/accounts, which sends no `models` — the
+// TypeError was swallowed and shown as "Failed to load accounts", so the endpoint
+// took the blame for a rendering bug. This checks the contract both ways.
+await check("the Kiro page renders against the real accounts payload", async () => {
+  writeConfig({ routing: { claude: "prov-kiro", codex: "prov-kiro", openai: "prov-oai" } });
+  const auth = "Basic " + Buffer.from("any:test-token").toString("base64");
+  const res = await fetch(`${base}/admin/kiro/accounts`, { headers: { Authorization: auth } });
+  assert.equal(res.status, 200, "accounts endpoint should answer 200");
+  const accounts = await res.json();
+  assert.ok(accounts.length, "harness config should expose Kiro accounts");
+
+  const html = (await import("../src/routes/kiroPage.js")).renderKiroPage();
+  // Every `a.<field>` the row renderer touches must exist on the real payload.
+  const start = html.indexOf("accounts.map(a =>");
+  const body = html.slice(start, html.indexOf('}).join("")', start));
+  const read = [...new Set([...body.matchAll(/\ba\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))];
+  assert.ok(read.length, "could not locate the account row renderer");
+  for (const field of read) {
+    assert.ok(field in accounts[0], `the Kiro page reads a.${field}, which /admin/kiro/accounts does not send`);
+  }
+
+  // And the numeric fields it formats must survive .toFixed() — a null budget is
+  // legitimate, an unformattable usedCredits is not.
+  for (const a of accounts) {
+    assert.doesNotThrow(() => (Number(a.usedCredits) || 0).toFixed(2), "usedCredits must be formattable");
+    assert.equal(typeof a.modelCount, "number", "modelCount must be a number for the row subtitle");
+  }
+});
+
+// The local presets are the reason this list exists: a local-openai provider
+// needs no API key, and dropping those buttons is what made the form look like it
+// only spoke to hosted vendors.
+await check("the providers page offers the local presets, not just hosted ones", async () => {
+  const html = (await import("../src/routes/providersPage.js")).renderProvidersPage();
+  for (const preset of ["openrouter", "requesty", "groq", "together", "ollama", "lmstudio", "anthropic"]) {
+    assert.ok(html.includes(`data-preset="${preset}"`), `the ${preset} preset button is missing`);
+  }
+  // Each button must have a matching entry in the preset table, or it silently
+  // does nothing when clicked.
+  const buttons = [...html.matchAll(/data-preset="([a-z]+)"/g)].map((m) => m[1]);
+  for (const name of new Set(buttons)) {
+    assert.match(html, new RegExp(`\\b${name}:\\s*\\{[^}]*baseUrl:`), `preset "${name}" has a button but no entry`);
+  }
+  assert.match(html, /ollama:\s*\{[^}]*type:\s*'local-openai'/, "ollama must be a local-openai preset");
+  assert.ok(html.includes("localhost:11434"), "the Ollama preset should point at its default local port");
 });
 
 console.log("\nsession profiles (per-session routing by base URL)");
