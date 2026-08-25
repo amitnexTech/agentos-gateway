@@ -12,12 +12,12 @@ A grep across `src/` for `sqlite`, `sso`, `oidc`, `kiro-cli`, `refreshToken`, `c
 
 ## Account management
 
-`src/routes/kiroAccount.js` + inline dashboard script in `src/routes/adminPage.js`:
+`src/routes/kiroAccount.js` + the `/admin/kiro` dashboard page (`src/routes/kiroPage.js`):
 
 - `POST /admin/kiro/account` — add account from API key; key is validated via `getProfile()`, `profileArn` identifies the account, duplicate `profileArn` is rejected 409, model list fetched live, raw key stored in envStore under a generated `AGENTOS_KEY_*` ref
 - `PUT /admin/kiro/account/:id` — edit name, edit creditBudget (null clears it), resetCredits, rotate apiKey (rotation rejects a key belonging to a different profileArn)
 - `DELETE /admin/kiro/account/:id` — deletes provider + stored key; `deleteProvider` also strips the provider from routing slots and drops its model bindings
-- `GET /admin/kiro/accounts` — list with usedCredits / creditBudget / usedPercent / hasKey / status
+- `GET /admin/kiro/accounts` — list with usedCredits / creditBudget / usedPercent / hasKey / status / **modelCount**. It reports the model *count*, not the list — the list belongs to `GET /admin/providers`. Reading a `models` array off this payload is what once broke the account page: the `TypeError` was caught and reported as "Failed to load accounts", which blamed the endpoint for a rendering bug. `bridge-verify.mjs` now asserts every field the row renderer touches exists on the real payload.
 
 Dashboard UI exposes Edit (name + budget via prompts), Replace key, Reset credits, and Delete per account row. Multiple Kiro accounts are supported side by side, each identified by its own `profileArn`.
 

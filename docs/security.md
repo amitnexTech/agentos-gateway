@@ -14,6 +14,7 @@ The gateway previously listened on `0.0.0.0` with no authentication whatsoever o
 - `/admin` is wrapped in `adminAuth`: HTTP Basic, with any username and the admin token as password. Basic rather than a bearer header specifically so a plain browser reaches the dashboard through its native credential prompt — no login page, cookie, or session code, and the dashboard's own same-origin `fetch()` calls inherit the credentials automatically.
 - `adminToken()` reads `AGENTOS_ADMIN_TOKEN` from `data/.env` (mode 0600) and generates a random 16-byte hex token on first boot if absent, so the dashboard can never be left open by omission. The token is printed at startup.
 - Comparison is `timingSafeEqual` on equal-length buffers.
+- The token is also displayed on `/admin/guide`, alongside a ready-made `curl` line for the admin API. That is deliberate and leaks nothing: only a caller who already presented the token can load the page. It is read from `data/.env` at request time and never written into source, so it cannot reach a published repo.
 
 ## Why `/v1` stays unauthenticated
 

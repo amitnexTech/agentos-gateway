@@ -25,6 +25,6 @@ Entry point for this project's docs. Every doc should be reachable from here
 - [[spend-tracking]] — the permanent usage record: monthly tokens and cost by project, provider and model, and how a request is attributed to a project
 - [[fallback-and-verification]] — auto-fallback design, CLI verification rules, capture-real-traffic playbook
 
-Not in the repo: `docs/provider-findings.md` holds per-vendor reliability and pricing notes. It is gitignored — it names specific resellers and dates quickly, so it stays a local file rather than shipping with the code.
+Provider-specific findings — which resellers proved reliable, how one was caught swapping backends — are deliberately not in this repo. They name vendors, date quickly, and are worth gathering for your own accounts rather than inheriting: `scripts/swap-probe.mjs`, `scripts/baseline.sh` and `scripts/kiro-cache-probe.mjs` are the tools, and [[cost-and-context]] explains what the signals mean.
 
 See also `README.md` for setup and the dashboard's own **Setup guide** page (`/admin/guide`) for pointing a client at a running gateway.

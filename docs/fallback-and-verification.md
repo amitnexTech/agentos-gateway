@@ -8,7 +8,7 @@ How opt-in auto-fallback works, and the hard-won rules for verifying any change 
 
 Opt-in, default OFF. When a tool's bound provider fails with a retriable upstream error (429/401/403/408/5xx/timeout), the same request retries on another enabled provider **allowed on that route** (`fallbackProviders(tool, primary)` filters by `supportedTypesForTool`). Since the [[protocol-bridge]] landed this pool spans protocols: an `anthropic-compat` provider can back up an `openai-compat` one and vice versa, because the route consumes the *winner's* adapter — `callUpstreamWithFallback` returns the adapter that served, so the response and streaming path match whatever protocol that provider speaks. Kiro remains its own island (a Kiro primary only falls back onto Kiro): `executeKiro` is a separate execution path.
 
-- **Toggle:** Dashboard Routing panel "Auto-fallback" checkbox, or `POST /admin/routing/fallback {enabled:bool}`; `GET /admin/routing` returns `fallbackEnabled`. Stored as `routing.fallbackEnabled` in `keys.json`.
+- **Toggle:** The "Auto-fallback" checkbox on `/admin/routing-panel`, or `POST /admin/routing/fallback {enabled:bool}`; `GET /admin/routing` returns `fallbackEnabled`. Stored as `routing.fallbackEnabled` in `keys.json`.
 - **Chain** (`keysStore.fallbackProviders`): Kiro→Kiro only (`executeKiro` is its own execution path); every other provider allowed on that slot for the rest, across protocols, since the [[protocol-bridge]] translates and the route consumes the winner's adapter.
 - **Kiro fallback is strict** — a candidate is only tried if it advertises the resolved model (an unconfigured id is a ban risk), and never if it is already over its own credit budget. Passthrough fallback forwards the raw id untouched.
 - **Budget exhaustion counts as retriable** — `executeKiro` refuses an over-budget account with a 402 carrying `budgetExhausted: true`, so with fallback ON the request moves to an account that still has room instead of failing. See [[kiro-integration]].
@@ -24,7 +24,7 @@ Opt-in, default OFF. When a tool's bound provider fails with a retriable upstrea
 | command | what it covers |
 |---|---|
 | `npm run test:unit` | 80 unit tests in `test/` over the pure logic: Kiro payload construction, the Kiro stream parser, upstream-error extraction and network-error mapping, the fetch-timeout knob, and routing/override/session-profile resolution |
-| `npm run test:bridge` | `scripts/bridge-verify.mjs` — 27 end-to-end checks through the real gateway against fake upstreams (both protocol directions, Kiro, budget enforcement, native passthrough regression) |
+| `npm run test:bridge` | `scripts/bridge-verify.mjs` — 43 end-to-end checks through the real gateway against fake upstreams (both protocol directions, Kiro, budget enforcement, native passthrough regression, and the dashboard pages: inline-script parsing, element references, layout-scope collisions, and the setup guide's URLs) |
 | `npm test` | both, in that order |
 
 What the units deliberately target is logic that fails *silently*: a dropped system prompt or tool result reads as the model "forgetting" rather than as an error; a wrong retriable status quietly changes which account pays; an exact per-model route losing to the force route sends expensive traffic to the wrong place. Both layers were mutation-checked — deleting one line of a mapping or resolver makes specific tests fail, so they are not passing by accident.

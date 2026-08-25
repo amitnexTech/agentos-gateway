@@ -52,18 +52,23 @@ src/
 │   ├── api.js              # Kiro header construction + management-plane calls
 │   └── config.js          # Kiro hosts, regions, x-amz-target constants
 ├── config/
-│   ├── keysStore.js        # Provider + model + routing registry (keys.json)
+│   ├── keysStore.js        # Provider + model + routing + profile registry (keys.json)
 │   ├── envStore.js         # Secrets store (data/.env)
 │   ├── usageStore.js       # Request/token tracking
-│   └── logStore.js         # Request log (last 200, persisted to logs.json)
+│   ├── logStore.js         # Request log (last 200, persisted to logs.json)
+│   └── spendStore.js       # Permanent append-only spend record (spend.jsonl) + monthly aggregates
 ├── adapters/
 │   ├── base.js             # Abstract adapter
 │   ├── openaiCompat.js     # OpenAI-compatible providers
 │   ├── anthropicCompat.js  # Anthropic-compatible providers (passthrough /v1/messages)
 │   ├── localOpenAI.js      # Local providers (no auth)
+│   ├── bridge.js           # Translation mixins applied when a route's protocol ≠ the provider's
 │   └── kiro.js             # Kiro adapter (URLs/headers; protocol handled by kiro/)
 ├── lib/
 │   ├── proxyExecute.js     # Shared upstream fetch + optional timeout + error map + SSE headers
+│   ├── protocolBridge.js   # OpenAI Chat ↔ Anthropic Messages mapping (request, response, stream)
+│   ├── fallback.js         # Retriable-error detection + the same-route provider pool
+│   ├── requestContext.js   # Per-request context: client label and project attribution
 │   ├── fetchTimeouts.js    # Disables undici's own 300s headers/body timeout (the second five-minute wall)
 │   ├── anthropicSse.js     # Anthropic SSE passthrough + model/usage extraction
 │   ├── stream.js           # Generic OpenAI SSE stream piping
@@ -74,9 +79,10 @@ src/
 │   ├── providerProbe.js    # Provider health check
 │   └── adminAuth.js        # Dashboard HTTP-Basic auth (admin token)
 data/                        # Runtime data (gitignored)
-├── keys.json                # Provider + routing config
-├── .env                      # API keys (secrets)
+├── keys.json                # Provider + routing + profile config
+├── .env                      # API keys and the admin token (secrets, mode 0600)
 ├── logs.json                 # Request log (last 200, survives restart)
+├── spend.jsonl               # Permanent per-request spend record (append-only, never trimmed)
 └── usage.json                 # Usage stats
 ```
 
