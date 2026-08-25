@@ -90,7 +90,7 @@ scripts/                   # bridge-verify.mjs (integration), bridge-live-probe.
 | Type | Use For | Auth |
 |------|---------|------|
 | `openai-compat` | OpenRouter, Requesty, Groq, Together, any OpenAI-format API | API key |
-| `anthropic-compat` | Anthropic direct, Lumosel, any Anthropic-format API | API key |
+| `anthropic-compat` | Anthropic direct, or any Anthropic-format API | API key |
 | `local-openai` | Ollama, LM Studio, llama.cpp | None |
 | `kiro` | Kiro (AWS CodeWhisperer) via `ksk_` API key — Anthropic-shaped requests over its own wire protocol; per-account credit budget enforced | API key |
 
@@ -151,7 +151,7 @@ class: the model looks uncooperative instead of the request looking broken.
 4. **Kiro credit budget enforcement** — an account past its `creditBudget` is refused with 402 before spending, and auto-fallback hands over to an account with room
 5. **Force route is a toggle** — a slot's *Model* dropdown either pins one model for all traffic (client's `/model` ignored) or is set to *(client decides)*, which forwards the client's own id to the slot provider. The dashboard now states which mode is live, and warns that a single-model provider needs the forced mode (a router selling one id answers 403 for every other one)
 6. **`GET /v1/models` is caller-aware** — `reachableModels()` answers per slot (user-agent inferred) or per session profile, instead of unioning every slot's provider; it deliberately does NOT narrow under a force route, where every id really is accepted
-7. **Per-model routes + force route** — one model id can go to a different provider than its tool's slot, optionally renamed upstream (`claude-sonnet-5` → aeorlink as `claude-sonnet-4-5-20250929`); `"*"` forces every model onto one target so the dashboard decides what actually runs, and `exempt` keeps a model id out of that force route (dashboard: Routing → Model overrides; API: `GET`/`POST /admin/routing/models`)
+7. **Per-model routes + force route** — one model id can go to a different provider than its tool's slot, optionally renamed upstream (`claude-sonnet-5` → another provider as `claude-sonnet-4-5-20250929`); `"*"` forces every model onto one target so the dashboard decides what actually runs, and `exempt` keeps a model id out of that force route (dashboard: Routing → Model overrides; API: `GET`/`POST /admin/routing/models`)
 8. **Model verification** — detects if provider responds with a different model than requested (bait-and-switch detection)
 9. **Token tracking** — input/output/cache_read/cache_write per request; Kiro rows are marked `~` because Kiro reports no token counts at all (estimate at ~4 chars/token)
 10. **Cost estimation** — approximate $ per request at Anthropic list rates for known Claude families; an unrecognised model shows `—` rather than a guessed price

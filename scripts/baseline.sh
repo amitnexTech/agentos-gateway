@@ -10,7 +10,7 @@ set -u
 
 cd "$(dirname "$0")/.."
 
-PROVIDER="${1:-lemosol}"
+PROVIDER="${1:?provider id or name required}"
 INTERVAL="${2:-1800}"
 shift 2 2>/dev/null || shift $# 
 MODELS=("$@")

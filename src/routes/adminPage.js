@@ -139,7 +139,7 @@ export function renderAdminPage() {
           <strong style="font-size:13px">Model overrides</strong>
           <span class="pill" id="overrideCount">0</span>
         </div>
-        <div class="subline" style="margin-bottom:10px">Exceptions to the slot above: send one model id to a different provider, under whatever name that provider uses. This is where "give me fable from aeorlink but sonnet from Kiro" lives — and where Claude Code's background models (its subagent model and the auto-mode classifier) get pointed at a provider that can actually serve them, so auto mode keeps working while everything else runs on the slot's forced model. Pick the provider first; the model list then shows only what it serves.</div>
+        <div class="subline" style="margin-bottom:10px">Exceptions to the slot above: send one model id to a different provider, under whatever name that provider uses. This is where "give me one model from a reseller but another from Kiro" lives — and where Claude Code's background models (its subagent model and the auto-mode classifier) get pointed at a provider that can actually serve them, so auto mode keeps working while everything else runs on the slot's forced model. Pick the provider first; the model list then shows only what it serves.</div>
         <div id="overrideList"></div>
         <div style="display:grid;grid-template-columns:0.7fr 1.1fr 1.2fr 1.2fr auto;gap:8px;align-items:end;margin-top:10px">
           <label>Tool

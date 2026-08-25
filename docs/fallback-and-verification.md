@@ -84,4 +84,3 @@ General rules this produced:
 - [[index]]
 - [[architecture]]
 - [[kiro-integration]]
-- [[provider-findings]]

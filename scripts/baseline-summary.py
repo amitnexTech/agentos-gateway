@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarise a baseline log: median tok/s, spread, and how often requests stall.
 
-    python3 scripts/baseline-summary.py [data/baseline-lemosol.log]
+    python3 scripts/baseline-summary.py [data/baseline-<provider>.log]
 
 Median rather than mean, because a handful of 35-second stalls drag an average
 somewhere that describes no actual request.
@@ -11,7 +11,7 @@ import statistics as st
 import sys
 from collections import defaultdict
 
-path = sys.argv[1] if len(sys.argv) > 1 else "data/baseline-lemosol.log"
+path = sys.argv[1] if len(sys.argv) > 1 else "data/baseline-provider.log"
 STALL_MS = 10_000
 
 samples = defaultdict(list)

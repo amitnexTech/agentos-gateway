@@ -15,8 +15,8 @@ The permanent usage record: how many tokens went out this month, on which projec
 One line looks like this:
 
 ```json
-{"ts":"2026-08-03T08:54:45.383Z","tool":"claude","project":"/home/amit/project/agentos-gateway",
- "client":"claude-cli/2.1.0","provider":"Kiro: amit pro+","providerId":"provider-2968eb5c",
+{"ts":"2026-08-03T08:54:45.383Z","tool":"claude","project":"/home/user/project/agentos-gateway",
+ "client":"claude-cli/2.1.0","provider":"Kiro: work","providerId":"provider-1a2b3c4d",
  "model":"claude-sonnet-4.5","status":"ok","inputTokens":29469,"outputTokens":31,
  "cacheReadTokens":0,"cacheWriteTokens":0,"cost":0.0889,"credits":0.156544,"estimated":true}
 ```

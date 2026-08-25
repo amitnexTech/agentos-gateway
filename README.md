@@ -72,7 +72,7 @@ Open `http://localhost:9000/admin/logs` to see:
 | Type | Examples |
 |------|----------|
 | `openai-compat` | OpenRouter, Requesty, Groq, Together AI |
-| `anthropic-compat` | Anthropic direct, Lumosel |
+| `anthropic-compat` | Anthropic direct, and any reseller exposing `/v1/messages` |
 | `local-openai` | Ollama, LM Studio (no auth needed) |
 
 ## License

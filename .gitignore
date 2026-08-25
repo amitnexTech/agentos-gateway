@@ -16,3 +16,10 @@ graphify-out/
 # vendor-facing report — quotes provider ids/usage from a specific account's
 # traffic, not something to publish with the code
 lumosel-token-report.md
+
+# Reseller evaluation notes. Names specific vendors and makes critical, legally
+# exposed claims about them — pricing, which plan silently fails, evidence that a
+# "claude-" route serves a different model, leaked upstream chains. Genuinely
+# useful locally; publishing it invites a dispute and dates badly as vendors
+# change. Kept out of the repo, not deleted.
+docs/provider-findings.md

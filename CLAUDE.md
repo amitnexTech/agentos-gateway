@@ -3,28 +3,13 @@
 Read `AGENTS.md` for architecture. This file has operational instructions only —
 for design rationale and detailed write-ups see `docs/` (start at `docs/index.md`).
 
-## ⚠️ Long-Running Processes — DO NOT KILL
+## ⚠️ Long-Running Process — DO NOT KILL
 
-Two things are expected to be running. Check before killing any node/bash process
-or running a broad `pkill`.
+The gateway itself (`node src/server.js` on :9000) is expected to be running, and
+a coding session is usually routing through it. Check before killing any node
+process or running a broad `pkill`.
 
-| What | Command | Started | Purpose |
-|---|---|---|---|
-| Gateway | `node src/server.js` on :9000 | 2026-07-26 | The gateway itself. Restart with `npm start` if down. |
-| Lumosel baseline monitor | `bash ./scripts/baseline.sh lemosol 1800` | 2026-07-26 ~21:16 IST | Samples Lumosel throughput every 30 min for a buy/skip decision. **Must keep running ~24h.** |
-
-The baseline monitor is detached (`nohup setsid`) and survives terminal close.
-It appends to `data/baseline-lemosol.log`. Read it with:
-
-```bash
-python3 scripts/baseline-summary.py
-```
-
-Stop it only once ~48 samples per model are collected (i.e. after 2026-07-27
-~21:00 IST), with `pkill -f baseline.sh`. Killing it early throws away the data
-and the sampling has to start over.
-
-Do not kill the gateway on :9000 without asking Amit first — Claude Code's own
+Do not kill the gateway on :9000 without asking first — Claude Code's own
 session usually routes through it. Test path changes on an isolated port instead:
 copy `data/keys.json` + `data/.env` into `/tmp/x`, then
 `setsid nohup env AGENTOS_DATA_DIR=/tmp/x PORT=9004 node src/server.js &`.
@@ -134,9 +119,9 @@ python3 scripts/baseline-summary.py [logfile]
 ./scripts/baseline.sh [provider] [interval_s] [model ...]
 ```
 
-See `docs/provider-findings.md` for what these scripts have found so far
-(Lumosel/Aerolink reliability, backend-switching evidence) and
-`docs/cost-and-context.md` for the model-swap detection methodology.
+See `docs/cost-and-context.md` for the model-swap detection methodology.
+Per-vendor results live in `docs/provider-findings.md`, which is gitignored —
+it names specific resellers, so it stays local rather than shipping with the code.
 
 ## Further reading
 
@@ -146,4 +131,3 @@ See `docs/provider-findings.md` for what these scripts have found so far
 - `docs/security.md` — dashboard auth, loopback binding, admin token rationale
 - `docs/cost-and-context.md` — Kiro credit/token measurement, model-swap detection
 - `docs/fallback-and-verification.md` — auto-fallback design, CLI verification playbook
-- `docs/provider-findings.md` — Lumosel/Aerolink reseller findings

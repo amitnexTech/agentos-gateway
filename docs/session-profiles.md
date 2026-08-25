@@ -21,10 +21,10 @@ A profile is the same "this provider, this model" pairing as a force route, scop
 ```jsonc
 // data/keys.json
 "profiles": {
-  "backend":  { "providerId": "provider-bfd0698f", "model": "claude-opus-4.5" },
-  "frontend": { "providerId": "provider-9a1c22e0", "model": "kimi-k3" },
-  "docs":     { "providerId": "provider-bfd0698f", "model": "claude-sonnet-4.5" },
-  "loose":    { "providerId": "provider-9a1c22e0" }   // pin the account only
+  "backend":  { "providerId": "provider-1a2b3c4d", "model": "claude-opus-4.5" },
+  "frontend": { "providerId": "provider-5e6f7a8b", "model": "kimi-k3" },
+  "docs":     { "providerId": "provider-1a2b3c4d", "model": "claude-sonnet-4.5" },
+  "loose":    { "providerId": "provider-5e6f7a8b" }   // pin the account only
 }
 ```
 

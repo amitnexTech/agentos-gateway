@@ -85,7 +85,7 @@ data/                        # Runtime data (gitignored)
 | Type | Use For | Auth |
 |------|---------|------|
 | `openai-compat` | OpenRouter, Requesty, Groq, Together, any OpenAI-format API | API key |
-| `anthropic-compat` | Anthropic direct, Lumosel, any Anthropic-format API | API key |
+| `anthropic-compat` | Anthropic direct, or any Anthropic-format API | API key |
 | `local-openai` | Ollama, LM Studio, llama.cpp | None |
 | `kiro` | Kiro (AWS CodeWhisperer) via `ksk_` API key — Anthropic-shaped requests over its own wire protocol | API key |
 
@@ -163,7 +163,7 @@ A tool slot binds **one** provider, so every model that tool asks for lands on t
 ```
 Claude Code sends   claude-sonnet-5
 OpenRouter serves   anthropic/claude-3.5-sonnet
-Lumosel serves      claude-sonnet-4-5-20250929
+provider serves     claude-sonnet-4-5-20250929
 Kiro serves         claude-sonnet-4.5
 ```
 

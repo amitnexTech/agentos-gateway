@@ -47,10 +47,10 @@ test("networkErrorToApiError unwraps fetch's nested cause", () => {
   const err = Object.assign(new TypeError("fetch failed"), {
     cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.example.com"), { code: "ENOTFOUND" }),
   });
-  const mapped = networkErrorToApiError(err, "aeorlink");
+  const mapped = networkErrorToApiError(err, "example-provider");
   assert.ok(mapped instanceof ApiError);
   assert.equal(mapped.status, 502);
-  assert.match(mapped.message, /Could not reach aeorlink/);
+  assert.match(mapped.message, /Could not reach example-provider/);
   assert.match(mapped.message, /does not resolve \(ENOTFOUND\)/);
   assert.ok(isNetworkError(err));
 });

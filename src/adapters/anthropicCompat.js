@@ -1,7 +1,7 @@
 import { ProviderAdapter } from "./base.js";
 
 // Anthropic-compatible provider adapter — for providers that speak the
-// Anthropic Messages API natively (Anthropic direct, Lumosel, etc.). The
+// Anthropic Messages API natively (Anthropic direct and compatible resellers). The
 // /v1/messages route forwards directly to these. Kiro has its own adapter type
 // (adapters/kiro.js): it accepts Anthropic-shaped requests but its wire protocol
 // differs, so it is handled via kiro/client.js rather than this passthrough.

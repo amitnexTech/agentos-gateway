@@ -20,7 +20,7 @@ test.after(() => rmSync(dataDir, { recursive: true, force: true }));
 const row = (over = {}) => ({
   ts: "2026-08-03T10:00:00.000Z",
   tool: "claude",
-  project: "/home/amit/project/gateway",
+  project: "/home/user/project/gateway",
   client: "claude-cli/2.1.0",
   provider: "Kiro A",
   model: "claude-sonnet-4.5",
@@ -37,7 +37,7 @@ const row = (over = {}) => ({
 
 test("totals add up across every dimension, and months are listed newest first", () => {
   appendSpend(row());
-  appendSpend(row({ project: "/home/amit/project/other", model: "claude-opus-5", provider: "aeorlink", estimated: false, credits: 0, cost: 0.02 }));
+  appendSpend(row({ project: "/home/user/project/other", model: "claude-opus-5", provider: "example-provider", estimated: false, credits: 0, cost: 0.02 }));
   appendSpend(row({ ts: "2026-07-30T09:00:00.000Z", tool: "codex", status: "error", inputTokens: 0, outputTokens: 0, cost: null, credits: 0 }));
 
   const all = getSpend();
@@ -50,9 +50,9 @@ test("totals add up across every dimension, and months are listed newest first",
 
   const august = getSpend({ month: "2026-08" });
   assert.equal(august.totals.requests, 2, "the July row must be out of scope");
-  assert.equal(august.byProject["/home/amit/project/gateway"].requests, 1);
-  assert.equal(august.byProject["/home/amit/project/other"].totalTokens, 1100);
-  assert.equal(august.byProvider["aeorlink"].requests, 1);
+  assert.equal(august.byProject["/home/user/project/gateway"].requests, 1);
+  assert.equal(august.byProject["/home/user/project/other"].totalTokens, 1100);
+  assert.equal(august.byProvider["example-provider"].requests, 1);
   assert.equal(august.byModel["claude-opus-5"].cost, 0.02);
   assert.equal(august.byTool["claude"].requests, 2);
   assert.equal(august.byClient["claude-cli/2.1.0"].requests, 2);
@@ -99,16 +99,16 @@ test("project attribution: Codex's turn metadata carries the workspace path", ()
   // same JSON string inside client_metadata) holds workspaces keyed by absolute path.
   const turnMeta = JSON.stringify({
     session_id: "s1",
-    workspaces: { "/home/amit/project/agentos-gateway": { latest_git_commit_hash: "abc", has_changes: false } },
+    workspaces: { "/home/user/project/agentos-gateway": { latest_git_commit_hash: "abc", has_changes: false } },
   });
   assert.equal(
     projectFromRequest({ headers: { "x-codex-turn-metadata": turnMeta }, body: {} }),
-    "/home/amit/project/agentos-gateway"
+    "/home/user/project/agentos-gateway"
   );
   // Same value, body route (client_metadata mirrors the header).
   assert.equal(
     projectFromRequest({ headers: {}, body: { client_metadata: { "x-codex-turn-metadata": turnMeta } } }),
-    "/home/amit/project/agentos-gateway"
+    "/home/user/project/agentos-gateway"
   );
   // Malformed metadata must not throw, just fail to attribute.
   assert.equal(projectFromRequest({ headers: { "x-codex-turn-metadata": "not json" }, body: {} }), null);
@@ -118,9 +118,9 @@ test("project attribution: Codex's turn metadata carries the workspace path", ()
 test("project attribution: Claude Code's working directory is read from the system prompt", () => {
   const system = [
     { type: "text", text: "You are Claude Code." },
-    { type: "text", text: "<env>\nWorking directory: /home/amit/project/trailmem\nIs directory a git repo: Yes\n</env>" },
+    { type: "text", text: "<env>\nWorking directory: /home/user/project/trailmem\nIs directory a git repo: Yes\n</env>" },
   ];
-  assert.equal(projectFromRequest({ headers: {}, body: { system } }), "/home/amit/project/trailmem");
+  assert.equal(projectFromRequest({ headers: {}, body: { system } }), "/home/user/project/trailmem");
   // String system prompts too.
   assert.equal(
     projectFromRequest({ headers: {}, body: { system: "working directory: /tmp/x" } }),

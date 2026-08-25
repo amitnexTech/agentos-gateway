@@ -8,7 +8,7 @@
 // prompts through /v1/chat/completions — the route that provider could not serve
 // before the bridge.
 //
-//   node scripts/bridge-live-probe.mjs "aeorlink" claude-haiku-4-5-20251001
+//   node scripts/bridge-live-probe.mjs "<provider>" claude-haiku-4-5-20251001
 //
 // Host quirks (#206): NAT64 AAAA records plus a 250ms Happy Eyeballs window make
 // plain fetch() time out here, hence the DNS order and family-attempt timeout.
@@ -22,7 +22,7 @@ import { join } from "node:path";
 dns.setDefaultResultOrder("ipv4first");
 setDefaultAutoSelectFamilyAttemptTimeout(2000);
 
-const [providerName = "aeorlink", model = "claude-haiku-4-5-20251001", d2Name = providerName, d2Model = model, kiroName = "", kiroModel = "claude-haiku-4.5"] =
+const [providerName = "", model = "claude-haiku-4-5-20251001", d2Name = providerName, d2Model = model, kiroName = "", kiroModel = "claude-haiku-4.5"] =
   process.argv.slice(2);
 
 const liveDir = process.env.AGENTOS_LIVE_DATA_DIR || join(process.cwd(), "data");
@@ -265,7 +265,7 @@ console.log(`\ndirection 2 — Claude Code -> ${d2Provider.name} typed openai-co
 
 // Kiro on the openai slot — only when a Kiro account is named, because this one
 // spends real credits. Two tiny prompts, cheapest model.
-//   node scripts/bridge-live-probe.mjs aeorlink <model> "token router" <model> "Kiro: Abhishek" claude-haiku-4.5
+//   node scripts/bridge-live-probe.mjs <openai-provider> <model> <anthropic-provider> <model> "<kiro-account>" claude-haiku-4.5
 if (kiroName) {
   const kiroProvider = live.providers.find((p) => p.name === kiroName && p.type === "kiro");
   if (!kiroProvider) {

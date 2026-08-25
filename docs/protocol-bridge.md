@@ -91,16 +91,16 @@ Measured 2026-08-02:
 
 | probe | provider | result |
 |---|---|---|
-| `/v1/chat/completions` non-stream, no `max_tokens` | aeorlink (`anthropic-compat`) | `200`, `"Paris"`, usage mapped |
-| `/v1/chat/completions` tool call | aeorlink | `finish_reason: tool_calls`, `get_weather {"city":"Pune"}` |
-| `/v1/chat/completions` stream | aeorlink | OpenAI chunks, `[DONE]`, usage chunk |
-| `/v1/responses` (Codex) | aeorlink | `custom_tool_call` → `exec "ls -la"` — the route that used to return `output: []` |
+| `/v1/chat/completions` non-stream, no `max_tokens` | an `anthropic-compat` reseller | `200`, `"Paris"`, usage mapped |
+| `/v1/chat/completions` tool call | the same `anthropic-compat` provider | `finish_reason: tool_calls`, `get_weather {"city":"Pune"}` |
+| `/v1/chat/completions` stream | the same `anthropic-compat` provider | OpenAI chunks, `[DONE]`, usage chunk |
+| `/v1/responses` (Codex) | the same `anthropic-compat` provider | `custom_tool_call` → `exec "ls -la"` — the route that used to return `output: []` |
 | `/v1/messages` non-stream | token router as `openai-compat` | `200`, `[{type:"text",text:"Tokyo"}]`, `stop_reason: end_turn` |
 | `/v1/messages` stream | token router as `openai-compat` | `message_start → content_block_start → content_block_delta → content_block_stop → message_delta → message_stop` |
-| `/v1/chat/completions` non-stream | `Kiro: Abhishek` / `claude-haiku-4.5` | `200`, `"Paris"`, log carries `credits 0.005` + `ctx 2%` |
-| `/v1/chat/completions` stream | `Kiro: Abhishek` | OpenAI chunks `1..5`, `[DONE]`, credits logged |
+| `/v1/chat/completions` non-stream | `Kiro: work` / `claude-haiku-4.5` | `200`, `"Paris"`, log carries `credits 0.005` + `ctx 2%` |
+| `/v1/chat/completions` stream | `Kiro: work` | OpenAI chunks `1..5`, `[DONE]`, credits logged |
 
-Two live findings: aeorlink does **not** serve `/chat/completions` (HTTP 305), so direction 2 needs a provider that actually speaks it; and a reasoning model on a small `max_tokens` returns `finish_reason: length` with empty content, which the bridge correctly refuses rather than handing Claude Code an empty message — give it room (800+) instead.
+Two live findings: that provider does **not** serve `/chat/completions` (HTTP 305), so direction 2 needs a provider that actually speaks it; and a reasoning model on a small `max_tokens` returns `finish_reason: length` with empty content, which the bridge correctly refuses rather than handing Claude Code an empty message — give it room (800+) instead.
 
 ## Related
 

@@ -77,11 +77,10 @@ A reseller that quietly serves a cheaper model **echoes back the model name you 
 
 The anthropic-compat path captures `rawModel` (in `src/routes/anthropic.js`) plus `responseModel`/`responseId`/`usage` — streaming via `src/lib/anthropicSse.js` (line-buffered SSE sniff), non-streaming inline. `src/routes/logPage.js` shows a `tok/s` column and the id under the model cell.
 
-**Detection lesson:** output token count on a fixed prompt at temperature 0 is the cheapest and most decisive swap signal, ahead of tok/s. Short probe bursts prove nothing — see [[provider-findings]] for the Lumosel case where the first 8 probes found no swapping and only a long series caught it. Never truncate upstream error bodies; real backend-chain leaks (see [[provider-findings]]) came from error text a probe had cut at 120 chars.
+**Detection lesson:** output token count on a fixed prompt at temperature 0 is the cheapest and most decisive swap signal, ahead of tok/s. Short probe bursts prove nothing — one reseller looked clean for its first 8 probes and only a long sampling run caught it swapping backends. Never truncate upstream error bodies: the clearest evidence of a multi-hop upstream chain came from error text an earlier probe had cut at 120 chars. Per-vendor results are in the gitignored `docs/provider-findings.md`.
 
 ## Related
 
 - [[index]]
 - [[kiro-integration]]
-- [[provider-findings]]
 - [[fallback-and-verification]]

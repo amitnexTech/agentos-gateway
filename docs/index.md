@@ -24,6 +24,7 @@ Entry point for this project's docs. Every doc should be reachable from here
 - [[cost-and-context]] — Kiro credit/token measurement, context-window visibility, model-swap detection signals
 - [[spend-tracking]] — the permanent usage record: monthly tokens and cost by project, provider and model, and how a request is attributed to a project
 - [[fallback-and-verification]] — auto-fallback design, CLI verification rules, capture-real-traffic playbook
-- [[provider-findings]] — Lumosel/Aerolink reliability and backend-switching findings
+
+Not in the repo: `docs/provider-findings.md` holds per-vendor reliability and pricing notes. It is gitignored — it names specific resellers and dates quickly, so it stays a local file rather than shipping with the code.
 
 See also `AGENTS.md` (architecture summary for agents) and `CLAUDE.md` (operational: what's running, what not to delete, build/run commands) in the repo root.
