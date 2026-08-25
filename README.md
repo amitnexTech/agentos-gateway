@@ -75,6 +75,39 @@ Open `http://localhost:9000/admin/logs` to see:
 | `anthropic-compat` | Anthropic direct, and any reseller exposing `/v1/messages` |
 | `local-openai` | Ollama, LM Studio (no auth needed) |
 
+## Documentation
+
+The dashboard's own **Setup guide** (`/admin/guide`) is the fastest way to point a
+client at a running gateway — it renders the base URLs, admin token and profile
+URLs from live state, with a copy button on each.
+
+Design notes and rationale live in [`docs/`](docs/index.md):
+
+| Doc | Covers |
+|---|---|
+| [architecture](docs/architecture.md) | Directory layout, provider types, adapter hierarchy, routing resolution, Codex wire format |
+| [protocol-bridge](docs/protocol-bridge.md) | OpenAI Chat ↔ Anthropic Messages translation both ways, and what is dropped vs refused |
+| [session-profiles](docs/session-profiles.md) | Per-session provider/model selection via a `/p/<name>` base URL |
+| [kiro-integration](docs/kiro-integration.md) | Kiro accounts, auth, model aliasing, credit budgets |
+| [codex-integration](docs/codex-integration.md) | The Codex `/v1/responses` path and synthetic SSE |
+| [security](docs/security.md) | Dashboard auth, loopback binding, why `/v1` stays unauthenticated |
+| [cost-and-context](docs/cost-and-context.md) | Token/credit measurement and model-swap detection |
+| [spend-tracking](docs/spend-tracking.md) | The permanent monthly record and project attribution |
+| [fallback-and-verification](docs/fallback-and-verification.md) | Auto-fallback design and the CLI verification playbook |
+
+## Tests
+
+```bash
+npm test
+```
+
+`node --test` units plus a single-file integration harness that boots the gateway
+against a fake upstream. Zero devDependencies. The harness also guards the
+dashboard, which has no build step: it checks that every page's inline script
+parses, that each one's element references resolve, that a page script cannot
+collide with the shared layout shell, and that the setup guide's URLs still match
+what the gateway serves.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

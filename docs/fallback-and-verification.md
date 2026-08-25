@@ -13,7 +13,7 @@ Opt-in, default OFF. When a tool's bound provider fails with a retriable upstrea
 - **Kiro fallback is strict** — a candidate is only tried if it advertises the resolved model (an unconfigured id is a ban risk), and never if it is already over its own credit budget. Passthrough fallback forwards the raw id untouched.
 - **Budget exhaustion counts as retriable** — `executeKiro` refuses an over-budget account with a 402 carrying `budgetExhausted: true`, so with fallback ON the request moves to an account that still has room instead of failing. See [[kiro-integration]].
 - **Pre-stream only** — `callUpstream`/`executeKiro` throw before any byte is streamed, so retry is clean; mid-stream failures are NOT recovered.
-- Each failed attempt is logged as an error entry; `logPage.js` shows a "fallback" badge by the provider name. `logRequest` captures a `fallback` (bool) field.
+- Each failed attempt is logged as an error entry; `logsPage.js` shows a "fallback" badge by the provider name. `logRequest` captures a `fallback` (bool) field.
 
 **Known gap:** no automatic multi-account rotation beyond this opt-in retry — the old Python proxy rotated accounts on every request; this gateway only moves on a failure (which now includes a Kiro account hitting its credit budget, see [[kiro-integration]]).
 

@@ -27,4 +27,4 @@ Entry point for this project's docs. Every doc should be reachable from here
 
 Not in the repo: `docs/provider-findings.md` holds per-vendor reliability and pricing notes. It is gitignored — it names specific resellers and dates quickly, so it stays a local file rather than shipping with the code.
 
-See also `AGENTS.md` (architecture summary for agents) and `CLAUDE.md` (operational: what's running, what not to delete, build/run commands) in the repo root.
+See also `README.md` for setup and the dashboard's own **Setup guide** page (`/admin/guide`) for pointing a client at a running gateway.

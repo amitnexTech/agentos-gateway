@@ -830,8 +830,11 @@ await check("logs: the date is shown on rows that are not from today", async () 
   // spanning several days unreadable (the live log held 4 days at the time). This
   // pins BOTH halves of the rule, because the risk runs both ways: dropping the
   // date again, or spamming today's 200 rows with the same date.
-  const html = (await import("../src/routes/logPage.js")).renderLogPage();
-  const source = /function formatTime\(iso\)\s*\{[\s\S]*?\n {4}\}/.exec(html);
+  // Reads the page that is actually served. Worth stating because this check once
+  // imported a superseded copy of the log page, so it enforced the rule on a
+  // module no route rendered — green while the live page was free to regress.
+  const html = (await import("../src/routes/logsPage.js")).renderLogsPage();
+  const source = /function formatTime\(iso\)\s*\{[\s\S]*?\n {6}\}/.exec(html);
   assert.ok(source, "formatTime must still exist in the log page — the rule lives there");
   const formatTime = new Function(`${source[0]}; return formatTime;`)();
 

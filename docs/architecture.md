@@ -14,7 +14,7 @@ Dashboard   ─→ localhost:9000/admin
 Logs        ─→ localhost:9000/admin/logs
 ```
 
-Each tool can use a different provider — or all the same. Switch in the dashboard dropdown, no restart needed for routing changes. Dashboard UI edits (`src/routes/*Page.js`, `layoutTemplate.js`) DO need a gateway restart — the modules are loaded once at boot (see `CLAUDE.md`).
+Each tool can use a different provider — or all the same. Switch in the dashboard dropdown, no restart needed for routing changes. Dashboard UI edits (`src/routes/*Page.js`, `layoutTemplate.js`) DO need a gateway restart — the modules are loaded once at boot.
 
 The dashboard is split into one page per concern, sharing a left-sidebar shell from `layoutTemplate.js`: `/admin` (overview), `/admin/routing-panel`, `/admin/providers-panel`, `/admin/logs`, `/admin/spend`, `/admin/kiro`, `/admin/guide`. The JSON APIs keep their original paths — `GET /admin/routing` and `GET /admin/providers` still return JSON, which is why the pages live on `-panel` URLs rather than taking those over. `/admin/classic` still serves the previous single-page dashboard as a rollback.
 
@@ -287,6 +287,10 @@ Reading tools from only one shape is what left Codex able to chat but unable to 
 - No provider-specific adapters beyond the 4 types — openai-compat/anthropic-compat cover the rest
 - No React dashboard
 - MIT licensed, open-source ready
+
+## Dashboard presets
+
+Quick-add buttons on `/admin/providers-panel` that fill the form (nothing is saved until Add): OpenRouter, Requesty, Groq, Together, Ollama, LM Studio, Anthropic, OpenAI. Ollama (`localhost:11434`) and LM Studio (`localhost:1234`) are `local-openai`, so they need no API key; the rest are `openai-compat` apart from Anthropic, which is `anthropic-compat`. `bridge-verify.mjs` asserts every button has a matching entry in the preset table, since a button with no entry silently does nothing.
 
 ## Related
 

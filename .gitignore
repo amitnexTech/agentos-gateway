@@ -13,6 +13,24 @@ dist/
 # graphify knowledge graph — regenerable (run /graphify or `graphify --update`)
 graphify-out/
 
+# Agent instruction files — written for whoever is driving this repo on this
+# machine, not for people reading the code. CLAUDE.md carries machine-specific
+# operational state (a ~/.config hardlink, which processes not to kill);
+# AGENTS.md is an architecture summary aimed at agents, and docs/ covers the same
+# ground for humans. Both stay local.
+CLAUDE.md
+AGENTS.md
+
+# Superseded dashboard pages, kept on disk as a reference while the split pages
+# settle. /admin/classic (adminPage.js) is the live rollback path, so these two
+# are no longer reachable and do not belong in the published tree.
+src/routes/logPage.js
+src/routes/spendPage.js
+
+# Placeholder for a build output that was never used — the dashboard is rendered
+# server-side with no build step.
+dashboard/
+
 # vendor-facing report — quotes provider ids/usage from a specific account's
 # traffic, not something to publish with the code
 lumosel-token-report.md
