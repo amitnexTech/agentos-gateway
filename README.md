@@ -12,7 +12,7 @@ A unified AI API gateway that routes Claude Code, Codex, and any OpenAI/Anthropi
 - **Token & cost tracking** — input/output/cache tokens with estimated cost per request
 - **Live request logs** — see every request's provider, model, latency, tokens in real-time
 - **Spend tracking** — permanent monthly totals by project, provider and model, so "what did this month cost and where did it go" is answerable
-- **Dashboard** — browser UI for adding providers, configuring models, switching routes
+- **Dashboard** — a seven-page browser UI (routing, providers, logs, spend, Kiro accounts, setup guide) with no build step
 - **Auto /v1 detection** — paste a base URL without /v1, gateway figures it out
 - **Zero config files** — everything managed through the dashboard, no YAML/JSON editing
 
@@ -25,13 +25,35 @@ npm install
 npm start
 ```
 
-Open `http://localhost:9000/admin` in your browser.
+Open `http://localhost:9000/admin` in your browser. The gateway binds to
+127.0.0.1 and prints a generated admin token on first boot — the dashboard asks
+for it over HTTP Basic auth (any username, the token as the password).
+
+## Dashboard
+
+Every page shares a left sidebar, and all of them render from live state at
+request time:
+
+| Page | URL | What it does |
+|---|---|---|
+| Dashboard | `/admin` | Overview: which provider serves each tool, recent activity, health |
+| Routing | `/admin/routing-panel` | Assign a provider to each tool slot, toggle auto-fallback, manage session profiles |
+| Providers | `/admin/providers-panel` | Add, edit, test, enable/disable providers; fetch their model lists |
+| Logs | `/admin/logs` | Live request log: requested vs answered model, tokens, latency, cost |
+| Spend | `/admin/spend` | Monthly totals broken down by project, provider and model |
+| Kiro | `/admin/kiro` | Kiro accounts: credit usage, budgets, key rotation |
+| Setup guide | `/admin/guide` | Copy-paste base URLs, admin token and profile URLs for each client |
+
+`/admin/classic` still serves the earlier single-page dashboard as a rollback.
+
+Note that `GET /admin/routing` and `GET /admin/providers` are JSON APIs, not
+pages — that is why the two panels sit on `-panel` URLs.
 
 ## Usage
 
 ### Add a provider
 
-1. Open dashboard → Add provider
+1. Open **Providers** → Add provider
 2. Pick a preset (OpenRouter, Anthropic, Groq, etc.) or enter manually
 3. Paste your API key
 4. Click "Fetch" to get available models
@@ -39,7 +61,7 @@ Open `http://localhost:9000/admin` in your browser.
 
 ### Route tools to providers
 
-In the Routing panel at top:
+On the **Routing** page:
 - **Claude Code** → pick which provider handles `/v1/messages`
 - **Codex** → pick which provider handles `/v1/responses`
 - **OpenAI** → pick which provider handles `/v1/chat/completions`
@@ -59,13 +81,13 @@ base_url=http://localhost:9000/v1
 OPENAI_BASE_URL=http://localhost:9000/v1
 ```
 
-### View logs
+### Watch what it costs
 
-Open `http://localhost:9000/admin/logs` to see:
-- Which model was requested vs which actually responded
-- Token usage (input/output/cache)
-- Estimated cost per request
-- Latency with color coding
+**Logs** shows each request as it happens: which model was requested versus which
+actually responded, token usage split by input/output/cache, estimated cost, and
+latency with colour coding. **Spend** keeps the permanent record — monthly totals
+by project, provider and model, so a month's bill can be traced to the work that
+caused it.
 
 ## Supported Provider Types
 
