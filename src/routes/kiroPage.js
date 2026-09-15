@@ -31,8 +31,9 @@ export function renderKiroPage() {
       (function () {
       const el = (id) => document.getElementById(id);
       const esc = (s) => String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
-      const api = async (url, opts) => {
-        const r = await fetch(url, opts);
+      const api = async (url, opts = {}) => {
+        const headers = opts.body ? { "Content-Type": "application/json", ...(opts.headers || {}) } : opts.headers;
+        const r = await fetch(url, { ...opts, headers });
         if (!r.ok) throw new Error(await r.text());
         return r.json();
       };

@@ -19,7 +19,7 @@ A unified AI API gateway that routes Claude Code, Codex, and any OpenAI/Anthropi
 ## Quick Start
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/amitnexTech/agentos-gateway.git
 cd agentos-gateway
 npm install
 npm start

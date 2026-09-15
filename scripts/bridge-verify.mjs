@@ -963,6 +963,15 @@ await check("the Kiro page renders against the real accounts payload", async () 
   }
 });
 
+await check("the Kiro page declares JSON for account mutations", async () => {
+  const html = (await import("../src/routes/kiroPage.js")).renderKiroPage();
+  assert.match(
+    html,
+    /const headers = opts\.body \? \{ "Content-Type": "application\/json"/,
+    "reset usage and other account updates must be parsed by express.json()",
+  );
+});
+
 // The local presets are the reason this list exists: a local-openai provider
 // needs no API key, and dropping those buttons is what made the form look like it
 // only spoke to hosted vendors.
